@@ -1,0 +1,12 @@
+[package]
+name = "clockbot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serenity = { version = "0.12", features = ["client", "gateway", "model", "framework"] }
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+chrono = "0.4"
+dotenv = "0.15"
+anyhow = "1"
