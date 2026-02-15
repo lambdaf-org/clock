@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
     dotenv().ok();
 
     let token = env::var("DISCORD_TOKEN").expect("DISCORD_TOKEN missing");
-    let db = Arc::new(Db::open(Path::new("clock.db"))?);
+    let db = Arc::new(Db::open(Path::new("/data/clock.db"))?);
 
     let db_clone = Arc::clone(&db);
     let token_clone = token.clone();
