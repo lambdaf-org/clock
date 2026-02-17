@@ -1,4 +1,8 @@
 use regex::Regex;
+use once_cell::sync::Lazy;
+
+static RE_SPACES: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
+static RE_HYPHENS: Lazy<Regex> = Lazy::new(|| Regex::new(r"-+").unwrap());
 
 /// Normalize an activity name:
 /// 1. Collapse 3+ consecutive identical characters to 1 (e.g., "workkkkk" → "work")
@@ -20,12 +24,10 @@ pub fn normalize_activity(raw: &str) -> String {
     let lowercased = hyphenated.to_lowercase();
     
     // Normalize multiple spaces to single space
-    let re_spaces = Regex::new(r"\s+").unwrap();
-    let normalized_spaces = re_spaces.replace_all(&lowercased, " ");
+    let normalized_spaces = RE_SPACES.replace_all(&lowercased, " ");
     
     // Normalize multiple hyphens to single hyphen
-    let re_hyphens = Regex::new(r"-+").unwrap();
-    let normalized_hyphens = re_hyphens.replace_all(&normalized_spaces, "-");
+    let normalized_hyphens = RE_HYPHENS.replace_all(&normalized_spaces, "-");
     
     // Trim any leading/trailing spaces or hyphens
     normalized_hyphens.trim_matches(|c| c == ' ' || c == '-').to_string()

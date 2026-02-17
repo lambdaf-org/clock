@@ -206,6 +206,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "dotenv",
+ "once_cell",
  "regex",
  "rusqlite",
  "serenity",
