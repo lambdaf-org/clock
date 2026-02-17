@@ -594,3 +594,163 @@ impl Db {
         Ok((sessions_updated, archive_rows_merged))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn setup_test_db() -> (Db, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = Db::open(&db_path).unwrap();
+        (db, temp_dir)
+    }
+
+    #[test]
+    fn test_rename_activity_basic() {
+        let (db, _temp_dir) = setup_test_db();
+        let user_id = "user123";
+        let username = "TestUser";
+
+        // Clock in and out for "boring work"
+        db.clock_in(user_id, username, "boring work").unwrap();
+        let session = db.active_session(user_id).unwrap().unwrap();
+        assert_eq!(session.activity, "boring work");
+        
+        // Clock out
+        db.clock_out(user_id).unwrap();
+
+        // Rename "boring work" to "work"
+        let (sessions_updated, archive_merged) = db.rename_activity(user_id, "boring work", "work").unwrap();
+        assert_eq!(sessions_updated, 1);
+        assert_eq!(archive_merged, 0);
+
+        // Verify the rename worked
+        let conn = db.conn.lock().unwrap();
+        let activity: String = conn
+            .query_row(
+                "SELECT activity FROM sessions WHERE user_id = ?1",
+                params![user_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(activity, "work");
+    }
+
+    #[test]
+    fn test_rename_activity_not_found() {
+        let (db, _temp_dir) = setup_test_db();
+        let user_id = "user123";
+
+        // Try to rename a non-existent activity
+        let result = db.rename_activity(user_id, "nonexistent", "work");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "no sessions found with that activity");
+    }
+
+    #[test]
+    fn test_rename_activity_merge_archives() {
+        let (db, _temp_dir) = setup_test_db();
+        let user_id = "user123";
+        let username = "TestUser";
+        let week_label = "KW07/2026";
+
+        // Manually insert archive entries for the same user and week but different activities
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO activity_archive (user_id, username, week_label, activity, total_min) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![user_id, username, week_label, "work", 60],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO activity_archive (user_id, username, week_label, activity, total_min) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![user_id, username, week_label, "boring work", 30],
+            ).unwrap();
+        }
+
+        // Rename "boring work" to "work" - should merge the archives
+        let (sessions_updated, archive_merged) = db.rename_activity(user_id, "boring work", "work").unwrap();
+        assert_eq!(sessions_updated, 0); // No sessions to update
+        assert_eq!(archive_merged, 1); // One duplicate row merged
+
+        // Verify the archives were merged
+        let conn = db.conn.lock().unwrap();
+        let total_min: i64 = conn
+            .query_row(
+                "SELECT total_min FROM activity_archive WHERE user_id = ?1 AND week_label = ?2 AND activity = ?3",
+                params![user_id, week_label, "work"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total_min, 90); // 60 + 30
+
+        // Verify only one row exists for this user/week/activity
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM activity_archive WHERE user_id = ?1 AND week_label = ?2 AND activity = ?3",
+                params![user_id, week_label, "work"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_rename_activity_active_session() {
+        let (db, _temp_dir) = setup_test_db();
+        let user_id = "user123";
+        let username = "TestUser";
+
+        // Clock in to "boring work"
+        db.clock_in(user_id, username, "boring work").unwrap();
+        
+        // Rename while still clocked in
+        let (sessions_updated, _) = db.rename_activity(user_id, "boring work", "work").unwrap();
+        assert_eq!(sessions_updated, 1);
+
+        // Verify the active session was renamed
+        let session = db.active_session(user_id).unwrap().unwrap();
+        assert_eq!(session.activity, "work");
+    }
+
+    #[test]
+    fn test_rename_activity_per_user() {
+        let (db, _temp_dir) = setup_test_db();
+        let user1 = "user123";
+        let user2 = "user456";
+        let username1 = "User1";
+        let username2 = "User2";
+
+        // Both users have "boring work" sessions
+        db.clock_in(user1, username1, "boring work").unwrap();
+        db.clock_out(user1).unwrap();
+        
+        db.clock_in(user2, username2, "boring work").unwrap();
+        db.clock_out(user2).unwrap();
+
+        // User1 renames their activity
+        let (sessions_updated, _) = db.rename_activity(user1, "boring work", "work").unwrap();
+        assert_eq!(sessions_updated, 1);
+
+        // Verify user1's activity was renamed but user2's wasn't
+        let conn = db.conn.lock().unwrap();
+        let user1_activity: String = conn
+            .query_row(
+                "SELECT activity FROM sessions WHERE user_id = ?1",
+                params![user1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(user1_activity, "work");
+
+        let user2_activity: String = conn
+            .query_row(
+                "SELECT activity FROM sessions WHERE user_id = ?1",
+                params![user2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(user2_activity, "boring work");
+    }
+}
