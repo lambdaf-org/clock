@@ -90,6 +90,10 @@ impl Db {
                 activity    TEXT    NOT NULL,
                 total_min   INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS metadata (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_sess_user   ON sessions(user_id);
             CREATE INDEX IF NOT EXISTS idx_sess_end    ON sessions(ended_at);
             CREATE INDEX IF NOT EXISTS idx_arch_user   ON weekly_archive(user_id);
@@ -356,5 +360,133 @@ impl Db {
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Normalize all activity names in `sessions` and `activity_archive` tables.
+    /// Call once on startup to clean up historical data.
+    /// Uses a version flag to run only once.
+    pub fn normalize_activities(&self) -> anyhow::Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+
+        // Check if normalization has already been run
+        let already_normalized: bool = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'activities_normalized'",
+                [],
+                |r| {
+                    let val: String = r.get(0)?;
+                    Ok(val == "true")
+                },
+            )
+            .unwrap_or(false);
+
+        if already_normalized {
+            return Ok(());
+        }
+
+        // Use rusqlite transaction for proper RAII and rollback semantics
+        let tx = conn.transaction()?;
+
+        // Step 1: Normalize activities in sessions table
+        let mut stmt = tx.prepare("SELECT DISTINCT activity FROM sessions")?;
+        let activities: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        for original in activities {
+            let normalized = crate::normalize::normalize_activity(&original);
+            if normalized != original {
+                tx.execute(
+                    "UPDATE sessions SET activity = ?1 WHERE activity = ?2",
+                    params![normalized, original],
+                )?;
+            }
+        }
+
+        // Step 2: Normalize activities in activity_archive table
+        let mut stmt = tx.prepare("SELECT DISTINCT activity FROM activity_archive")?;
+        let activities: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        for original in activities {
+            let normalized = crate::normalize::normalize_activity(&original);
+            if normalized != original {
+                tx.execute(
+                    "UPDATE activity_archive SET activity = ?1 WHERE activity = ?2",
+                    params![normalized, original],
+                )?;
+            }
+        }
+
+        // Step 3: Merge duplicate rows in activity_archive that now have the same (user_id, week_label, activity)
+        // Find groups with duplicates
+        let mut stmt = tx.prepare(
+            "SELECT user_id, week_label, activity, COUNT(*) as cnt
+             FROM activity_archive
+             GROUP BY user_id, week_label, activity
+             HAVING cnt > 1",
+        )?;
+        let duplicates: Vec<(String, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        // Prepare statements once for all duplicate groups
+        let mut select_stmt = tx.prepare(
+            "SELECT id, total_min FROM activity_archive
+             WHERE user_id = ?1 AND week_label = ?2 AND activity = ?3
+             ORDER BY id ASC",
+        )?;
+        let mut update_stmt = tx.prepare(
+            "UPDATE activity_archive SET total_min = ?1 WHERE id = ?2"
+        )?;
+        let mut delete_stmt = tx.prepare(
+            "DELETE FROM activity_archive WHERE id = ?1"
+        )?;
+
+        // For each duplicate group, keep the row with MIN(id), sum total_min into it, delete rest
+        for (user_id, week_label, activity) in duplicates {
+            // Get all ids and total_min for this group
+            let rows: Vec<(i64, i64)> = select_stmt
+                .query_map(params![&user_id, &week_label, &activity], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            if rows.len() > 1 {
+                let keep_id = rows[0].0;
+                let total_sum: i64 = rows.iter().map(|(_, mins)| mins).sum();
+
+                // Update the kept row with the sum
+                update_stmt.execute(params![total_sum, keep_id])?;
+
+                // Delete the duplicate rows
+                for (id, _) in rows.iter().skip(1) {
+                    delete_stmt.execute(params![id])?;
+                }
+            }
+        }
+
+        drop(select_stmt);
+        drop(update_stmt);
+        drop(delete_stmt);
+
+        // Mark normalization as complete
+        tx.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('activities_normalized', 'true')",
+            [],
+        )?;
+
+        // Commit transaction
+        tx.commit()?;
+
+        Ok(())
     }
 }

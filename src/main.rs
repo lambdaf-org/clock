@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod normalize;
 
 use db::Db;
 use dotenv::dotenv;
@@ -54,6 +55,10 @@ async fn main() -> anyhow::Result<()> {
 
     let token = env::var("DISCORD_TOKEN").expect("DISCORD_TOKEN missing");
     let db = Arc::new(Db::open(Path::new("/data/clock.db"))?);
+
+    // Normalize all existing activity names in the database
+    db.normalize_activities()?;
+    println!("[clock] Activity names normalized");
 
     let db_clone = Arc::clone(&db);
     let token_clone = token.clone();
