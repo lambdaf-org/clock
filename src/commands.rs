@@ -98,12 +98,14 @@ fn format_board(entries: &[LeaderboardEntry]) -> String {
     let medals = ["🥇", "🥈", "🥉"];
     let max_min = entries.iter().map(|e| e.total_minutes).max().unwrap_or(1);
 
+     let max_name_len = entries.iter().map(|e| e.username.len()).max().unwrap_or(8);
+
     let mut out = String::new();
     for (i, e) in entries.iter().enumerate() {
         let medal = if i < 3 { medals[i] } else { "▫️" };
         let bar = make_bar(e.total_minutes, max_min);
         let dur = format_duration(e.total_minutes);
-        out += &format!("{} **{}** `{}` {}\n", medal, e.username, bar, dur);
+        out += &format!("{} `{:<width$} {}` {}\n", medal, e.username, bar, dur, width = max_name_len);
     }
     out
 }
