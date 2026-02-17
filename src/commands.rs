@@ -43,7 +43,8 @@ pub async fn handle_command(ctx: &Context, msg: &Message, db: &Arc<Db>) {
                 .await;
             return;
         }
-        handle_clock_in(ctx, msg, db, activity).await;
+        let activity = crate::normalize::normalize_activity(activity);
+        handle_clock_in(ctx, msg, db, &activity).await;
     } else if rest == "out" {
         handle_clock_out(ctx, msg, db).await;
     } else if rest == "status" {
