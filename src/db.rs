@@ -366,7 +366,7 @@ impl Db {
     /// Call once on startup to clean up historical data.
     /// Uses a version flag to run only once.
     pub fn normalize_activities(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
 
         // Check if normalization has already been run
         let already_normalized: bool = conn
@@ -384,11 +384,11 @@ impl Db {
             return Ok(());
         }
 
-        // Begin transaction for atomic migration
-        conn.execute("BEGIN TRANSACTION", [])?;
+        // Use rusqlite transaction for proper RAII and rollback semantics
+        let tx = conn.transaction()?;
 
         // Step 1: Normalize activities in sessions table
-        let mut stmt = conn.prepare("SELECT DISTINCT activity FROM sessions")?;
+        let mut stmt = tx.prepare("SELECT DISTINCT activity FROM sessions")?;
         let activities: Vec<String> = stmt
             .query_map([], |r| r.get(0))?
             .filter_map(|r| r.ok())
@@ -398,7 +398,7 @@ impl Db {
         for original in activities {
             let normalized = crate::normalize::normalize_activity(&original);
             if normalized != original {
-                conn.execute(
+                tx.execute(
                     "UPDATE sessions SET activity = ?1 WHERE activity = ?2",
                     params![normalized, original],
                 )?;
@@ -406,7 +406,7 @@ impl Db {
         }
 
         // Step 2: Normalize activities in activity_archive table
-        let mut stmt = conn.prepare("SELECT DISTINCT activity FROM activity_archive")?;
+        let mut stmt = tx.prepare("SELECT DISTINCT activity FROM activity_archive")?;
         let activities: Vec<String> = stmt
             .query_map([], |r| r.get(0))?
             .filter_map(|r| r.ok())
@@ -416,7 +416,7 @@ impl Db {
         for original in activities {
             let normalized = crate::normalize::normalize_activity(&original);
             if normalized != original {
-                conn.execute(
+                tx.execute(
                     "UPDATE activity_archive SET activity = ?1 WHERE activity = ?2",
                     params![normalized, original],
                 )?;
@@ -425,7 +425,7 @@ impl Db {
 
         // Step 3: Merge duplicate rows in activity_archive that now have the same (user_id, week_label, activity)
         // Find groups with duplicates
-        let mut stmt = conn.prepare(
+        let mut stmt = tx.prepare(
             "SELECT user_id, week_label, activity, COUNT(*) as cnt
              FROM activity_archive
              GROUP BY user_id, week_label, activity
@@ -437,47 +437,55 @@ impl Db {
             .collect();
         drop(stmt);
 
+        // Prepare statements once for all duplicate groups
+        let mut select_stmt = tx.prepare(
+            "SELECT id, total_min FROM activity_archive
+             WHERE user_id = ?1 AND week_label = ?2 AND activity = ?3
+             ORDER BY id ASC",
+        )?;
+        let mut update_stmt = tx.prepare(
+            "UPDATE activity_archive SET total_min = ?1 WHERE id = ?2"
+        )?;
+        let mut delete_stmt = tx.prepare(
+            "DELETE FROM activity_archive WHERE id = ?1"
+        )?;
+
         // For each duplicate group, keep the row with MIN(id), sum total_min into it, delete rest
         for (user_id, week_label, activity) in duplicates {
             // Get all ids and total_min for this group
-            let mut stmt = conn.prepare(
-                "SELECT id, total_min FROM activity_archive
-                 WHERE user_id = ?1 AND week_label = ?2 AND activity = ?3
-                 ORDER BY id ASC",
-            )?;
-            let rows: Vec<(i64, i64)> = stmt
+            let rows: Vec<(i64, i64)> = select_stmt
                 .query_map(params![&user_id, &week_label, &activity], |r| {
                     Ok((r.get(0)?, r.get(1)?))
                 })?
                 .filter_map(|r| r.ok())
                 .collect();
-            drop(stmt);
 
             if rows.len() > 1 {
                 let keep_id = rows[0].0;
                 let total_sum: i64 = rows.iter().map(|(_, mins)| mins).sum();
 
                 // Update the kept row with the sum
-                conn.execute(
-                    "UPDATE activity_archive SET total_min = ?1 WHERE id = ?2",
-                    params![total_sum, keep_id],
-                )?;
+                update_stmt.execute(params![total_sum, keep_id])?;
 
                 // Delete the duplicate rows
                 for (id, _) in rows.iter().skip(1) {
-                    conn.execute("DELETE FROM activity_archive WHERE id = ?1", params![id])?;
+                    delete_stmt.execute(params![id])?;
                 }
             }
         }
 
+        drop(select_stmt);
+        drop(update_stmt);
+        drop(delete_stmt);
+
         // Mark normalization as complete
-        conn.execute(
+        tx.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES ('activities_normalized', 'true')",
             [],
         )?;
 
         // Commit transaction
-        conn.execute("COMMIT", [])?;
+        tx.commit()?;
 
         Ok(())
     }

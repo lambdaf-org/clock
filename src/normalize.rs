@@ -121,6 +121,8 @@ mod tests {
         assert_eq!(collapse_repeated_chars("school"), "school");
         assert_eq!(collapse_repeated_chars("meeting"), "meeting");
         assert_eq!(collapse_repeated_chars("booooring"), "boring");
+        // Demonstrate that 3 consecutive becomes 2
+        assert_eq!(collapse_repeated_chars("workkk"), "workk");
     }
 
     #[test]
