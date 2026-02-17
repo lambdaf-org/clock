@@ -357,4 +357,95 @@ impl Db {
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
+
+    /// Normalize all activity names in `sessions` and `activity_archive` tables.
+    /// Call once on startup to clean up historical data.
+    pub fn normalize_activities(&self) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        // Step 1: Normalize activities in sessions table
+        let mut stmt = conn.prepare("SELECT DISTINCT activity FROM sessions")?;
+        let activities: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        for original in activities {
+            let normalized = crate::normalize::normalize_activity(&original);
+            if normalized != original {
+                conn.execute(
+                    "UPDATE sessions SET activity = ?1 WHERE activity = ?2",
+                    params![normalized, original],
+                )?;
+            }
+        }
+
+        // Step 2: Normalize activities in activity_archive table
+        let mut stmt = conn.prepare("SELECT DISTINCT activity FROM activity_archive")?;
+        let activities: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        for original in activities {
+            let normalized = crate::normalize::normalize_activity(&original);
+            if normalized != original {
+                conn.execute(
+                    "UPDATE activity_archive SET activity = ?1 WHERE activity = ?2",
+                    params![normalized, original],
+                )?;
+            }
+        }
+
+        // Step 3: Merge duplicate rows in activity_archive that now have the same (user_id, week_label, activity)
+        // Find groups with duplicates
+        let mut stmt = conn.prepare(
+            "SELECT user_id, week_label, activity, COUNT(*) as cnt
+             FROM activity_archive
+             GROUP BY user_id, week_label, activity
+             HAVING cnt > 1",
+        )?;
+        let duplicates: Vec<(String, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        // For each duplicate group, keep the row with MIN(id), sum total_min into it, delete rest
+        for (user_id, week_label, activity) in duplicates {
+            // Get all ids and total_min for this group
+            let mut stmt = conn.prepare(
+                "SELECT id, total_min FROM activity_archive
+                 WHERE user_id = ?1 AND week_label = ?2 AND activity = ?3
+                 ORDER BY id ASC",
+            )?;
+            let rows: Vec<(i64, i64)> = stmt
+                .query_map(params![&user_id, &week_label, &activity], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(stmt);
+
+            if rows.len() > 1 {
+                let keep_id = rows[0].0;
+                let total_sum: i64 = rows.iter().map(|(_, mins)| mins).sum();
+
+                // Update the kept row with the sum
+                conn.execute(
+                    "UPDATE activity_archive SET total_min = ?1 WHERE id = ?2",
+                    params![total_sum, keep_id],
+                )?;
+
+                // Delete the duplicate rows
+                for (id, _) in rows.iter().skip(1) {
+                    conn.execute("DELETE FROM activity_archive WHERE id = ?1", params![id])?;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
