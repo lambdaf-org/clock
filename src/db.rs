@@ -90,6 +90,10 @@ impl Db {
                 activity    TEXT    NOT NULL,
                 total_min   INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS metadata (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_sess_user   ON sessions(user_id);
             CREATE INDEX IF NOT EXISTS idx_sess_end    ON sessions(ended_at);
             CREATE INDEX IF NOT EXISTS idx_arch_user   ON weekly_archive(user_id);
@@ -360,8 +364,28 @@ impl Db {
 
     /// Normalize all activity names in `sessions` and `activity_archive` tables.
     /// Call once on startup to clean up historical data.
+    /// Uses a version flag to run only once.
     pub fn normalize_activities(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
+
+        // Check if normalization has already been run
+        let already_normalized: bool = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'activities_normalized'",
+                [],
+                |r| {
+                    let val: String = r.get(0)?;
+                    Ok(val == "true")
+                },
+            )
+            .unwrap_or(false);
+
+        if already_normalized {
+            return Ok(());
+        }
+
+        // Begin transaction for atomic migration
+        conn.execute("BEGIN TRANSACTION", [])?;
 
         // Step 1: Normalize activities in sessions table
         let mut stmt = conn.prepare("SELECT DISTINCT activity FROM sessions")?;
@@ -445,6 +469,15 @@ impl Db {
                 }
             }
         }
+
+        // Mark normalization as complete
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('activities_normalized', 'true')",
+            [],
+        )?;
+
+        // Commit transaction
+        conn.execute("COMMIT", [])?;
 
         Ok(())
     }
