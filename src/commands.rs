@@ -9,6 +9,7 @@ const HELP: &str = r#"**Commands**
 `/clock who` — who's working
 `/clock leaderboard` — weekly + all-time
 `/clock stats` — activity breakdown
+`/clock rename <old> > <new>` — rename + merge activity
 `/clock help`"#;
 
 const COLOR_GREEN: u32 = 0x2ecc71;
@@ -55,6 +56,9 @@ pub async fn handle_command(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         handle_leaderboard(ctx, msg, db).await;
     } else if rest == "stats" {
         handle_stats(ctx, msg, db).await;
+    } else if rest.starts_with("rename ") {
+        let args = rest.strip_prefix("rename ").unwrap().trim();
+        handle_rename(ctx, msg, db, args).await;
     } else {
         let _ = msg.reply(&ctx.http, HELP).await;
     }
@@ -435,4 +439,90 @@ async fn handle_stats(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         .channel_id
         .send_message(&ctx.http, CreateMessage::new().embed(embed))
         .await;
+}
+
+async fn handle_rename(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
+    let user_id = msg.author.id.to_string();
+
+    // Split args on " > " or ">"
+    let parts: Vec<&str> = if args.contains(" > ") {
+        args.split(" > ").collect()
+    } else if args.contains('>') {
+        args.split('>').map(|s| s.trim()).collect()
+    } else {
+        vec![]
+    };
+
+    // Validate input
+    if parts.len() != 2 || parts[0].trim().is_empty() || parts[1].trim().is_empty() {
+        let embed = CreateEmbed::new()
+            .color(COLOR_RED)
+            .title("⚠️ Invalid Syntax")
+            .description("Usage: `/clock rename <old activity> > <new activity>`")
+            .footer(CreateEmbedFooter::new(swiss_timestamp()));
+        let _ = msg
+            .channel_id
+            .send_message(&ctx.http, CreateMessage::new().embed(embed))
+            .await;
+        return;
+    }
+
+    let old_name = crate::normalize::normalize_activity(parts[0].trim());
+    let new_name = crate::normalize::normalize_activity(parts[1].trim());
+
+    // Check if they're the same after normalization
+    if old_name == new_name {
+        let embed = CreateEmbed::new()
+            .color(COLOR_GRAY)
+            .title("ℹ️ Already the Same")
+            .description(format!(
+                "**{}** and **{}** are already the same after normalization.",
+                parts[0].trim(),
+                parts[1].trim()
+            ))
+            .footer(CreateEmbedFooter::new(swiss_timestamp()));
+        let _ = msg
+            .channel_id
+            .send_message(&ctx.http, CreateMessage::new().embed(embed))
+            .await;
+        return;
+    }
+
+    // Call db.rename_activity
+    match db.rename_activity(&user_id, &old_name, &new_name) {
+        Ok((sessions_updated, archive_rows_merged)) => {
+            let mut details = String::new();
+            if sessions_updated > 0 {
+                details.push_str(&format!("✅ {} session(s) updated\n", sessions_updated));
+            }
+            if archive_rows_merged > 0 {
+                details.push_str(&format!("🔀 {} archive row(s) merged\n", archive_rows_merged));
+            }
+            if details.is_empty() {
+                details = "*No changes made*".to_string();
+            }
+
+            let embed = CreateEmbed::new()
+                .color(COLOR_BLUE)
+                .title("✏️ Activity Renamed")
+                .description(format!("**{}** → **{}**", old_name, new_name))
+                .field("Changes", details, false)
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+        Err(_) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_RED)
+                .title("⚠️ Activity Not Found")
+                .description(format!("No sessions found for **{}**", old_name))
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+    }
 }

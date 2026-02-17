@@ -489,4 +489,108 @@ impl Db {
 
         Ok(())
     }
+
+    /// Rename all of a user's sessions with `old_activity` to `new_activity`.
+    /// In `sessions`: UPDATE activity for all rows matching (user_id, old_activity).
+    /// In `activity_archive`: UPDATE activity, then merge any resulting duplicates
+    /// by summing total_min for the same (user_id, week_label, new_activity).
+    /// Returns (sessions_updated, archive_rows_merged) counts.
+    pub fn rename_activity(&self, user_id: &str, old_activity: &str, new_activity: &str) -> anyhow::Result<(usize, usize)> {
+        let mut conn = self.conn.lock().unwrap();
+
+        // Check that the user actually has sessions or archive entries with old_activity
+        let has_sessions: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sessions WHERE user_id = ?1 AND activity = ?2",
+            params![user_id, old_activity],
+            |r| r.get(0),
+        )?;
+
+        let has_archive: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM activity_archive WHERE user_id = ?1 AND activity = ?2",
+            params![user_id, old_activity],
+            |r| r.get(0),
+        )?;
+
+        if !has_sessions && !has_archive {
+            anyhow::bail!("no sessions found with that activity");
+        }
+
+        // Start transaction
+        let tx = conn.transaction()?;
+
+        // Update sessions table
+        let sessions_updated = tx.execute(
+            "UPDATE sessions SET activity = ?1 WHERE user_id = ?2 AND activity = ?3",
+            params![new_activity, user_id, old_activity],
+        )?;
+
+        // Update activity_archive table
+        tx.execute(
+            "UPDATE activity_archive SET activity = ?1 WHERE user_id = ?2 AND activity = ?3",
+            params![new_activity, user_id, old_activity],
+        )?;
+
+        // Merge duplicate archive rows for this user
+        // Find groups with duplicates after the rename
+        let mut stmt = tx.prepare(
+            "SELECT user_id, week_label, activity, COUNT(*) as cnt
+             FROM activity_archive
+             WHERE user_id = ?1 AND activity = ?2
+             GROUP BY user_id, week_label, activity
+             HAVING cnt > 1",
+        )?;
+        let duplicates: Vec<(String, String, String)> = stmt
+            .query_map(params![user_id, new_activity], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        let mut archive_rows_merged = 0;
+
+        // Prepare statements for merging duplicates
+        let mut select_stmt = tx.prepare(
+            "SELECT id, total_min FROM activity_archive
+             WHERE user_id = ?1 AND week_label = ?2 AND activity = ?3
+             ORDER BY id ASC",
+        )?;
+        let mut update_stmt = tx.prepare(
+            "UPDATE activity_archive SET total_min = ?1 WHERE id = ?2"
+        )?;
+        let mut delete_stmt = tx.prepare(
+            "DELETE FROM activity_archive WHERE id = ?1"
+        )?;
+
+        // For each duplicate group, keep the row with MIN(id), sum total_min into it, delete rest
+        for (uid, week_label, activity) in duplicates {
+            let rows: Vec<(i64, i64)> = select_stmt
+                .query_map(params![&uid, &week_label, &activity], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            if rows.len() > 1 {
+                let keep_id = rows[0].0;
+                let total_sum: i64 = rows.iter().map(|(_, mins)| mins).sum();
+
+                // Update the kept row with the sum
+                update_stmt.execute(params![total_sum, keep_id])?;
+
+                // Delete the duplicate rows
+                for (id, _) in rows.iter().skip(1) {
+                    delete_stmt.execute(params![id])?;
+                    archive_rows_merged += 1;
+                }
+            }
+        }
+
+        drop(select_stmt);
+        drop(update_stmt);
+        drop(delete_stmt);
+
+        // Commit transaction
+        tx.commit()?;
+
+        Ok((sessions_updated, archive_rows_merged))
+    }
 }
