@@ -5,7 +5,9 @@ static RE_SPACES: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
 static RE_HYPHENS: Lazy<Regex> = Lazy::new(|| Regex::new(r"-+").unwrap());
 
 /// Normalize an activity name:
-/// 1. Collapse 3+ consecutive identical characters to 1 (e.g., "workkkkk" → "work")
+/// 1. Collapse excessive character repetition:
+///    - Exactly 3 consecutive identical characters → keep 2
+///    - 4+ consecutive identical characters → keep 1
 /// 2. Split PascalCase/camelCase into hyphenated lowercase (e.g., "WorkSchool" → "work-school")
 /// 3. Lowercase everything
 pub fn normalize_activity(raw: &str) -> String {
