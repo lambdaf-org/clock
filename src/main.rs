@@ -7,7 +7,6 @@ use dotenv::dotenv;
 use serenity::all::*;
 use serenity::async_trait;
 use std::env;
-use std::path::Path;
 use std::sync::Arc;
 
 struct Handler {
@@ -30,9 +29,9 @@ impl EventHandler for Handler {
             let embed = CreateEmbed::new()
                 .color(0x2ecc71)
                 .title("✅ ClockBot Online")
-                .description(format!(
+                .description(
                     "Summary channel verified.\nWeekly reports will post here every Monday 00:00.",
-                ))
+                )
                 .footer(CreateEmbedFooter::new(
                     db::now_ch().format("%d.%m.%Y %H:%M").to_string(),
                 ));
@@ -54,10 +53,11 @@ async fn main() -> anyhow::Result<()> {
     dotenv().ok();
 
     let token = env::var("DISCORD_TOKEN").expect("DISCORD_TOKEN missing");
-    let db = Arc::new(Db::open(Path::new("/data/clock.db"))?);
+    let db_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:///data/clock.db".into());
+    let db = Arc::new(Db::open(&db_url).await?);
 
     // Normalize all existing activity names in the database
-    db.normalize_activities()?;
+    db.normalize_activities().await?;
     println!("[clock] Activity names normalized");
 
     let db_clone = Arc::clone(&db);
@@ -76,12 +76,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Every Monday 00:00 Swiss time:
-/// 1. Post weekly summary to SUMMARY_CHANNEL
-/// 2. Archive the week
-/// 3. Clear completed sessions
 async fn weekly_reset_loop(db: &Arc<Db>, token: &str) {
-    use chrono::{Datelike, Duration, Weekday};
+    use chrono::{Datelike, Duration, Timelike, Weekday};
     use tokio::time::{sleep, Duration as TokioDuration};
 
     let summary_channel: Option<ChannelId> = env::var("SUMMARY_CHANNEL")
@@ -114,9 +110,8 @@ async fn weekly_reset_loop(db: &Arc<Db>, token: &str) {
 
         let week_label = db::swiss_week_label();
 
-        // Post weekly summary before archiving
         if let Some(channel_id) = summary_channel {
-            match db.weekly_summary() {
+            match db.weekly_summary().await {
                 Ok(summary) if summary.total_sessions > 0 => {
                     let embeds = commands::build_weekly_summary_embeds(&summary, &week_label);
                     let mut msg = CreateMessage::new();
@@ -134,8 +129,7 @@ async fn weekly_reset_loop(db: &Arc<Db>, token: &str) {
             }
         }
 
-        // Archive and clear
-        match db.archive_week(&week_label) {
+        match db.archive_week(&week_label).await {
             Ok(()) => println!("[clock] Archived {week_label}"),
             Err(e) => eprintln!("[clock] Archive failed: {e}"),
         }
@@ -143,5 +137,3 @@ async fn weekly_reset_loop(db: &Arc<Db>, token: &str) {
         sleep(TokioDuration::from_secs(120)).await;
     }
 }
-
-use chrono::Timelike;

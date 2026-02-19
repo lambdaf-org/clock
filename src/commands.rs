@@ -103,14 +103,21 @@ fn format_board(entries: &[LeaderboardEntry]) -> String {
     let medals = ["🥇", "🥈", "🥉"];
     let max_min = entries.iter().map(|e| e.total_minutes).max().unwrap_or(1);
 
-     let max_name_len = entries.iter().map(|e| e.username.len()).max().unwrap_or(8);
+    let max_name_len = entries.iter().map(|e| e.username.len()).max().unwrap_or(8);
 
     let mut out = String::new();
     for (i, e) in entries.iter().enumerate() {
         let medal = if i < 3 { medals[i] } else { "▫️" };
         let bar = make_bar(e.total_minutes, max_min);
         let dur = format_duration(e.total_minutes);
-        out += &format!("{} `{:<width$} {}` {}\n", medal, e.username, bar, dur, width = max_name_len);
+        out += &format!(
+            "{} `{:<width$} {}` {}\n",
+            medal,
+            e.username,
+            bar,
+            dur,
+            width = max_name_len
+        );
     }
     out
 }
@@ -211,7 +218,7 @@ async fn handle_clock_in(ctx: &Context, msg: &Message, db: &Arc<Db>, activity: &
     let user_id = msg.author.id.to_string();
     let username = msg.author.display_name().to_string();
 
-    match db.clock_in(&user_id, &username, activity) {
+    match db.clock_in(&user_id, &username, activity).await {
         Ok(()) => {
             let embed = CreateEmbed::new()
                 .color(COLOR_GREEN)
@@ -230,7 +237,7 @@ async fn handle_clock_in(ctx: &Context, msg: &Message, db: &Arc<Db>, activity: &
                 .await;
         }
         Err(_) => {
-            let session = db.active_session(&user_id).ok().flatten();
+            let session = db.active_session(&user_id).await.ok().flatten();
             let desc = match session {
                 Some(s) => format!("Already on **{}**\nUse `/clock out` first", s.activity),
                 None => "Already clocked in. `/clock out` first.".into(),
@@ -251,7 +258,7 @@ async fn handle_clock_out(ctx: &Context, msg: &Message, db: &Arc<Db>) {
     let user_id = msg.author.id.to_string();
     let username = msg.author.display_name().to_string();
 
-    match db.clock_out(&user_id) {
+    match db.clock_out(&user_id).await {
         Ok((minutes, activity)) => {
             let embed = CreateEmbed::new()
                 .color(COLOR_RED)
@@ -281,7 +288,7 @@ async fn handle_status(ctx: &Context, msg: &Message, db: &Arc<Db>) {
     let user_id = msg.author.id.to_string();
     let username = msg.author.display_name().to_string();
 
-    match db.active_session(&user_id) {
+    match db.active_session(&user_id).await {
         Ok(Some(session)) => {
             let now = db::now_ch();
             let elapsed = (now - session.started_at).num_minutes();
@@ -313,7 +320,7 @@ async fn handle_status(ctx: &Context, msg: &Message, db: &Arc<Db>) {
 }
 
 async fn handle_who(ctx: &Context, msg: &Message, db: &Arc<Db>) {
-    match db.who_is_working() {
+    match db.who_is_working().await {
         Ok(sessions) if !sessions.is_empty() => {
             let now = db::now_ch();
             let mut lines = String::new();
@@ -350,8 +357,8 @@ async fn handle_who(ctx: &Context, msg: &Message, db: &Arc<Db>) {
 }
 
 async fn handle_leaderboard(ctx: &Context, msg: &Message, db: &Arc<Db>) {
-    let weekly = db.leaderboard_weekly().unwrap_or_default();
-    let alltime = db.leaderboard_alltime().unwrap_or_default();
+    let weekly = db.leaderboard_weekly().await.unwrap_or_default();
+    let alltime = db.leaderboard_alltime().await.unwrap_or_default();
 
     let week_label = db::swiss_week_label();
     let weekly_text = format_board(&weekly);
@@ -394,7 +401,7 @@ async fn handle_leaderboard(ctx: &Context, msg: &Message, db: &Arc<Db>) {
 }
 
 async fn handle_stats(ctx: &Context, msg: &Message, db: &Arc<Db>) {
-    let weekly = db.activity_breakdown_weekly().unwrap_or_default();
+    let weekly = db.activity_breakdown_weekly().await.unwrap_or_default();
     let week_label = db::swiss_week_label();
 
     if weekly.is_empty() {
@@ -411,7 +418,6 @@ async fn handle_stats(ctx: &Context, msg: &Message, db: &Arc<Db>) {
 
     let breakdown_text = format_activity_breakdown(&weekly);
 
-    // Aggregate top activities across all users
     let mut activity_totals: std::collections::HashMap<String, i64> =
         std::collections::HashMap::new();
     for e in &weekly {
@@ -489,14 +495,17 @@ async fn handle_rename(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
     }
 
     // Call db.rename_activity
-    match db.rename_activity(&user_id, &old_name, &new_name) {
+    match db.rename_activity(&user_id, &old_name, &new_name).await {
         Ok((sessions_updated, archive_rows_merged)) => {
             let mut details = String::new();
             if sessions_updated > 0 {
                 details.push_str(&format!("✅ {} session(s) updated\n", sessions_updated));
             }
             if archive_rows_merged > 0 {
-                details.push_str(&format!("🔀 {} archive row(s) merged\n", archive_rows_merged));
+                details.push_str(&format!(
+                    "🔀 {} archive row(s) merged\n",
+                    archive_rows_merged
+                ));
             }
             if details.is_empty() {
                 details = "*No changes made*".to_string();
