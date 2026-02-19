@@ -256,7 +256,7 @@ async fn handle_clock_out(ctx: &Context, msg: &Message, db: &Arc<Db>) {
             let embed = CreateEmbed::new()
                 .color(COLOR_RED)
                 .title("🔴 Clocked Out")
-                .description(format!("**{}** finished **{}**", username, activity))
+                .description(format!("**{}** finished working on **{}**", username, activity))
                 .field("Duration", format_duration(minutes), true)
                 .footer(CreateEmbedFooter::new(swiss_timestamp()));
             let _ = msg
