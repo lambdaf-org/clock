@@ -1,20 +1,16 @@
 # ClockBot
-
-Clock in/out tracker for Discord. SQLite-backed, weekly resets, all-time leaderboard.
-
+Clock in/out tracker for Discord. SQLite or PostgreSQL backed, weekly resets, all-time leaderboard.
 ## Commands
-
 ```
 /clock in <activity>   — start tracking
 /clock out             — stop tracking, shows duration
 /clock status          — your current session
 /clock who             — who's working right now
 /clock leaderboard     — weekly + all-time rankings
+/clock stats           — activity breakdown per person
 /clock help            — command list
 ```
-
 ## Setup
-
 1. Create a Discord bot at https://discord.com/developers/applications
 2. Enable **MESSAGE CONTENT** intent in Bot settings
 3. Invite with scopes: `bot`, `applications.commands`  
@@ -22,6 +18,29 @@ Clock in/out tracker for Discord. SQLite-backed, weekly resets, all-time leaderb
 4. Copy `.env.example` to `.env`, paste your token
 5. `cargo run`
 
-The bot creates `clock.db` in the working directory on first run.
+## Database
 
-Weekly stats archive automatically every Monday at 00:00 UTC.
+Set `DATABASE_URL` in `.env` to choose the backend.
+
+**SQLite** (default):
+```
+DATABASE_URL=sqlite:///data/clock.db
+```
+
+**PostgreSQL**:
+```
+DATABASE_URL=postgres://user:password@host:5432/clockbot
+```
+
+If `DATABASE_URL` is not set, defaults to `sqlite:///data/clock.db`.
+
+Tables are created automatically on first run for both backends.
+
+## Environment Variables
+```
+DISCORD_TOKEN=       # required
+DATABASE_URL=        # optional, defaults to sqlite
+SUMMARY_CHANNEL=     # optional, channel ID for weekly summary posts
+```
+
+Weekly stats archive automatically every Monday at 00:00 Swiss time.
