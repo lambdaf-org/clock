@@ -50,7 +50,9 @@ fn style_descriptions() -> Vec<(Style, &'static str)> {
             Style::Architect,
             "A person who builds engines, bots, tools, platforms, provisioning systems, \
             collaboration tools, access management, real-time systems, database work, server code, \
-            automation scripts, integration code, developer tooling, infrastructure code",
+            automation scripts, integration code, developer tooling, infrastructure code, \
+            fullstack development, frontend, backend, deployment, testing, bug fixes, \
+            databases, postgres, monitoring, kafka, splunk, web applications, angular, spring",
         ),
         (
             Style::Visionary,
@@ -572,8 +574,14 @@ impl RoleClassifier {
             .map(|v| v.as_slice())
             .unwrap_or(&["Unknown"]);
 
-        // Deterministic pick based on total_minutes so same data = same word within a week
-        let idx = (total_minutes as usize) % words.len();
+        // Sub-rank: position within the tier determines which word (ascending)
+        let tier_starts: [i64; 7] = [0, 0, 1200, 2400, 3600, 4500, 5400];
+        let tier_ends: [i64; 7] = [0, 1200, 2400, 3600, 4500, 5400, 7200];
+        let start = tier_starts[tier];
+        let end = tier_ends[tier];
+        let range = (end - start).max(1);
+        let position = ((total_minutes - start) as f64) / (range as f64);
+        let idx = ((position * words.len() as f64) as usize).min(words.len() - 1);
         let word = words[idx];
 
         let role = format_role(tier, word);

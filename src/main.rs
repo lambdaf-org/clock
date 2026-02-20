@@ -240,7 +240,7 @@ async fn assign_weekly_roles(
             continue;
         }
 
-        let (role_name, _word, _tier) = match classifier.classify(activities, total) {
+        let (role_name, _word, tier) = match classifier.classify(activities, total) {
             Ok(result) => result,
             Err(e) => {
                 eprintln!("[roles] Classification failed for {}: {e}", user_id);
@@ -248,9 +248,20 @@ async fn assign_weekly_roles(
             }
         };
 
+        // Tier colours: cool → warm as hours increase
+        let colour = match tier {
+            1 => 0x95a5a6, // grey
+            2 => 0x3498db, // blue
+            3 => 0x2ecc71, // green
+            4 => 0xf1c40f, // gold
+            5 => 0xe67e22, // orange
+            6 => 0xe74c3c, // red
+            _ => 0x95a5a6,
+        };
+
         // Create the role
         let role = guild_id
-            .create_role(http, EditRole::new().name(&role_name).colour(0xf1c40f))
+            .create_role(http, EditRole::new().name(&role_name).colour(colour))
             .await;
 
         match role {
