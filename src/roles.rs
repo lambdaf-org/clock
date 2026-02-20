@@ -60,9 +60,9 @@ fn style_descriptions() -> Vec<(Style, &'static str)> {
         ),
         (
             Style::Executor,
-            "A person who fills out paperwork, handles admin duties, processes documents, \
-            does data entry, submits forms, handles bureaucracy, does routine clerical tasks, \
-            filing, sorting, copying, scanning, scheduling appointments",
+            "A person who does physical manual labor, carries boxes, cleans floors, \
+            washes dishes, mows lawns, paints walls, moves furniture, digs holes, \
+            lifts heavy objects, sweeps, mops, scrubs, hauls trash, stacks shelves",
         ),
         (
             Style::Analyst,
