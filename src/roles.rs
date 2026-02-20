@@ -373,25 +373,29 @@ impl RoleClassifier {
             return Ok((format_role(tier, "Unknown"), "Unknown".to_string(), tier));
         }
 
+        // Pre-embed all activities (once each, not 35 times)
+        let mut activity_embeddings: Vec<(Vec<f32>, i64)> = Vec::new();
+        for (activity, minutes) in activities {
+            let weight = if activity == "work" {
+                *minutes / 4
+            } else {
+                *minutes
+            };
+            let clean_activity = activity.replace('-', " ");
+            let framed = format!("a person working on: {}", clean_activity);
+            let emb = self.embed(&framed)?;
+            activity_embeddings.push((emb, weight));
+        }
+
         let mut word_scores: Vec<(f32, &WordEntry)> = Vec::new();
 
         for word_entry in &tier_words {
             let mut weighted_score = 0.0f32;
             let mut total_weight = 0i64;
 
-            for (activity, minutes) in activities {
-                // Downweight generic "work" — it has no semantic signal
-                let weight = if activity == "work" {
-                    *minutes / 4
-                } else {
-                    *minutes
-                };
-                // Split hyphens so model sees real words:
-                // "work-iam-provisioning" → "work iam provisioning"
-                let clean_activity = activity.replace('-', " ");
-                let activity_embedding = self.embed(&clean_activity)?;
-                let sim = cosine_similarity(&activity_embedding, &word_entry.embedding);
-                weighted_score += sim * (weight as f32);
+            for (activity_embedding, weight) in &activity_embeddings {
+                let sim = cosine_similarity(activity_embedding, &word_entry.embedding);
+                weighted_score += sim * (*weight as f32);
                 total_weight += weight;
             }
 
@@ -403,6 +407,12 @@ impl RoleClassifier {
         }
 
         word_scores.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Debug: print top 5 word scores
+        println!("[roles] Tier {} scores:", tier);
+        for (score, entry) in word_scores.iter().take(5) {
+            println!("[roles]   {:.4} {} ({})", score, entry.word, entry.style);
+        }
 
         let best = word_scores[0].1;
         Ok((format_role(tier, &best.word), best.word.clone(), tier))
