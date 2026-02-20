@@ -296,7 +296,7 @@ impl RoleClassifier {
             ),
             (
                 "executor".into(),
-                "work, grinding, getting things done, general tasks, admin, paperwork, operations, shipping",
+                "grinding, getting things done, manual tasks, admin, paperwork, operations, shipping, brute force, repetitive labor",
             ),
             (
                 "analyst".into(),
@@ -381,13 +381,15 @@ impl RoleClassifier {
 
             for (activity, minutes) in activities {
                 // Downweight generic "work" — it has no semantic signal
-                // so it shouldn't dominate the word choice
                 let weight = if activity == "work" {
                     *minutes / 4
                 } else {
                     *minutes
                 };
-                let activity_embedding = self.embed(activity)?;
+                // Split hyphens so model sees real words:
+                // "work-iam-provisioning" → "work iam provisioning"
+                let clean_activity = activity.replace('-', " ");
+                let activity_embedding = self.embed(&clean_activity)?;
                 let sim = cosine_similarity(&activity_embedding, &word_entry.embedding);
                 weighted_score += sim * (weight as f32);
                 total_weight += weight;
