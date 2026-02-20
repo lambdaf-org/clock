@@ -100,7 +100,7 @@ fn word_pool() -> HashMap<String, HashMap<usize, Vec<String>>> {
     style!(
         "executor",
         &["Worker", "Grinder", "Hustler", "Soldier", "Grunt"],
-        &["Hammer", "Brute", "Workhorse", "Bulldog", "Mule"],
+        &["Hammer", "Brute", "Workhorse", "Ironside", "Tank"],
         &[
             "Juggernaut",
             "Steamroller",
@@ -380,10 +380,17 @@ impl RoleClassifier {
             let mut total_weight = 0i64;
 
             for (activity, minutes) in activities {
+                // Downweight generic "work" — it has no semantic signal
+                // so it shouldn't dominate the word choice
+                let weight = if activity == "work" {
+                    *minutes / 4
+                } else {
+                    *minutes
+                };
                 let activity_embedding = self.embed(activity)?;
                 let sim = cosine_similarity(&activity_embedding, &word_entry.embedding);
-                weighted_score += sim * (*minutes as f32);
-                total_weight += minutes;
+                weighted_score += sim * (weight as f32);
+                total_weight += weight;
             }
 
             if total_weight > 0 {
