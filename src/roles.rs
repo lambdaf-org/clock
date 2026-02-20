@@ -508,30 +508,46 @@ impl RoleClassifier {
         let mut total_weight = 0i64;
 
         for (activity, minutes) in activities {
-            let weight = if activity == "work" {
-                *minutes / 4
-            } else {
-                *minutes
-            };
-            if weight == 0 {
+            // Pure "work" has zero semantic signal — skip it entirely
+            if activity == "work" {
                 continue;
             }
 
-            let clean = activity.replace('-', " ");
+            let mut clean = activity.replace('-', " ");
+            // Strip leading "work " from compound names like "work iam provisioning"
+            if clean.starts_with("work ") {
+                clean = clean["work ".len()..].to_string();
+            }
+            if clean.is_empty() {
+                continue;
+            }
+
             let activity_emb = self.embed(&clean)?;
 
             for se in &self.style_embeddings {
                 let sim = cosine_similarity(&activity_emb, &se.embedding);
-                *style_scores.entry(se.style).or_insert(0.0) += sim * (weight as f32);
+                *style_scores.entry(se.style).or_insert(0.0) += sim * (*minutes as f32);
             }
-            total_weight += weight;
+            total_weight += minutes;
         }
 
         // Normalize by total weight
-        if total_weight > 0 {
-            for score in style_scores.values_mut() {
-                *score /= total_weight as f32;
-            }
+        // If no activities had signal (all "work"), default to executor
+        if total_weight == 0 {
+            let pool = word_pool();
+            let words = pool
+                .get(&(Style::Executor, tier))
+                .map(|v| v.as_slice())
+                .unwrap_or(&["Unknown"]);
+            let idx = (total_minutes as usize) % words.len();
+            let word = words[idx];
+            let role = format_role(tier, word);
+            println!("[roles] No signal, defaulting to executor → {}", role);
+            return Ok((role, word.to_string(), tier));
+        }
+
+        for score in style_scores.values_mut() {
+            *score /= total_weight as f32;
         }
 
         // Sort styles by score
