@@ -285,11 +285,41 @@ impl RoleClassifier {
 
         println!("[roles] Embedding word pool...");
         let pool = word_pool();
+        let style_contexts: HashMap<String, &str> = HashMap::from([
+            (
+                "architect".into(),
+                "building systems, infrastructure, provisioning, tooling, engines, frameworks, backends, devops, CI/CD",
+            ),
+            (
+                "visionary".into(),
+                "creating landing pages, designing products, pitching ideas, launching startups, branding, marketing",
+            ),
+            (
+                "executor".into(),
+                "work, grinding, getting things done, general tasks, admin, paperwork, operations, shipping",
+            ),
+            (
+                "analyst".into(),
+                "research, benchmarks, data analysis, cognitive science, papers, studying, neuroscience, statistics",
+            ),
+            (
+                "ghost".into(),
+                "background maintenance, silent fixes, invisible work, cleanup, nobody notices",
+            ),
+            (
+                "strategist".into(),
+                "planning, coordinating, managing projects, roadmaps, team strategy, scheduling, delegation",
+            ),
+            (
+                "maverick".into(),
+                "experimenting, side projects, random exploration, physics engines, visualizers, hobby projects, games",
+            ),
+        ]);
         for (style, tiers) in &pool {
+            let ctx = style_contexts.get(style).unwrap_or(&"general work");
             for (&tier, words) in tiers {
                 for word in words {
-                    let context =
-                        format!("{} — a person who embodies the {} archetype", word, style);
+                    let context = format!("{} — {}", word, ctx);
                     let embedding = classifier.embed(&context)?;
                     classifier.words.push(WordEntry {
                         word: word.clone(),
