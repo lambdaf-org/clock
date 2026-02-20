@@ -48,27 +48,32 @@ fn style_descriptions() -> Vec<(Style, &'static str)> {
     vec![
         (
             Style::Architect,
-            "A person who builds software systems, frameworks, backends, APIs, infrastructure, \
-            provisioning, deployment pipelines, CI/CD, Docker containers, databases, server architecture, \
-            tooling, developer tools, SDKs, libraries, compilers, build systems, cloud services, networking",
+            "A software engineer who builds backend systems, writes code for engines, bots, \
+            tools, collaborations platforms, git integrations, provisioning systems, access management, \
+            identity and access, IAM, authentication, authorization, real-time collaboration, \
+            discord bots, chat applications, websocket servers, database schemas, ORMs, migrations, \
+            REST APIs, GraphQL, microservices, monorepos, build tools, package managers",
         ),
         (
             Style::Visionary,
             "A person who creates landing pages, designs products, builds brands, launches startups, \
             pitches ideas, creates marketing materials, writes copy, designs user interfaces, makes prototypes, \
-            envisions new products, creates demos, builds MVPs, designs logos, creates pitch decks",
+            envisions new products, creates demos, builds MVPs, designs logos, creates pitch decks, \
+            SaaS applications, grade management, visual dashboards, user-facing products, onboarding flows",
         ),
         (
             Style::Executor,
-            "A person who does repetitive manual labor, grinds through tasks, fills out paperwork, \
-            handles admin duties, processes documents, does data entry, completes assignments, \
-            finishes homework, submits forms, handles bureaucracy, does chores, routine operations",
+            "A person who does manual labor without creativity, fills out paperwork, \
+            handles admin duties, processes documents, does data entry, \
+            submits forms, handles bureaucracy, does chores, routine clerical operations, \
+            filing, sorting, copying, scanning, mailing, scheduling appointments",
         ),
         (
             Style::Analyst,
             "A person who does research, reads scientific papers, analyzes data, runs benchmarks, \
             studies neuroscience, cognitive science, machine learning theory, statistics, mathematics, \
-            writes academic papers, runs experiments, collects measurements, builds datasets, peer review",
+            writes academic papers, diploma thesis, university assignments, coursework, \
+            runs experiments, collects measurements, builds datasets, peer review, HF diploma",
         ),
         (
             Style::Ghost,
@@ -514,13 +519,17 @@ impl RoleClassifier {
             }
 
             let mut clean = activity.replace('-', " ");
-            // Strip leading "work " from compound names like "work iam provisioning"
-            if clean.starts_with("work ") {
-                clean = clean["work ".len()..].to_string();
+            // Strip "work" from anywhere — it adds no semantic signal
+            clean = clean.replace("work", "").trim().to_string();
+            // Collapse multiple spaces
+            while clean.contains("  ") {
+                clean = clean.replace("  ", " ");
             }
             if clean.is_empty() {
                 continue;
             }
+
+            println!("[roles]   activity: '{}' ({}min)", clean, minutes);
 
             let activity_emb = self.embed(&clean)?;
 
