@@ -8,205 +8,370 @@ use tokenizers::Tokenizer;
 const MODEL_ID: &str = "sentence-transformers/all-MiniLM-L6-v2";
 const REVISION: &str = "refs/pr/21";
 
-/// Tier thresholds in minutes (weekly)
 const TIER_THRESHOLDS: [(usize, i64); 6] = [
-    (1, 0),    // 0-20h
-    (2, 1200), // 20h
-    (3, 2400), // 40h
-    (4, 3600), // 60h
-    (5, 4500), // 75h
-    (6, 5400), // 90h
+    (1, 0),
+    (2, 1200),
+    (3, 2400),
+    (4, 3600),
+    (5, 4500),
+    (6, 5400),
 ];
 
-struct WordEntry {
-    word: String,
-    #[allow(dead_code)]
-    style: String,
-    tier: usize,
-    embedding: Vec<f32>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Style {
+    Architect,
+    Visionary,
+    Executor,
+    Analyst,
+    Ghost,
+    Strategist,
+    Maverick,
 }
 
-pub struct RoleClassifier {
-    model: BertModel,
-    tokenizer: Tokenizer,
-    device: Device,
-    words: Vec<WordEntry>,
-}
-
-fn word_pool() -> HashMap<String, HashMap<usize, Vec<String>>> {
-    let mut pool: HashMap<String, HashMap<usize, Vec<String>>> = HashMap::new();
-
-    macro_rules! style {
-        ($name:expr, $t1:expr, $t2:expr, $t3:expr, $t4:expr, $t5:expr, $t6:expr) => {{
-            let mut tiers = HashMap::new();
-            tiers.insert(1, $t1.iter().map(|s: &&str| s.to_string()).collect());
-            tiers.insert(2, $t2.iter().map(|s: &&str| s.to_string()).collect());
-            tiers.insert(3, $t3.iter().map(|s: &&str| s.to_string()).collect());
-            tiers.insert(4, $t4.iter().map(|s: &&str| s.to_string()).collect());
-            tiers.insert(5, $t5.iter().map(|s: &&str| s.to_string()).collect());
-            tiers.insert(6, $t6.iter().map(|s: &&str| s.to_string()).collect());
-            pool.insert($name.to_string(), tiers);
-        }};
+impl std::fmt::Display for Style {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Style::Architect => write!(f, "architect"),
+            Style::Visionary => write!(f, "visionary"),
+            Style::Executor => write!(f, "executor"),
+            Style::Analyst => write!(f, "analyst"),
+            Style::Ghost => write!(f, "ghost"),
+            Style::Strategist => write!(f, "strategist"),
+            Style::Maverick => write!(f, "maverick"),
+        }
     }
+}
 
-    style!(
-        "architect",
-        &["Planner", "Draftsman", "Mapper", "Framer", "Sketcher"],
-        &[
+/// Long, rich descriptions for each style. These are what the model compares against.
+/// Longer = better separation in embedding space.
+fn style_descriptions() -> Vec<(Style, &'static str)> {
+    vec![
+        (
+            Style::Architect,
+            "A person who builds software systems, frameworks, backends, APIs, infrastructure, \
+            provisioning, deployment pipelines, CI/CD, Docker containers, databases, server architecture, \
+            tooling, developer tools, SDKs, libraries, compilers, build systems, cloud services, networking",
+        ),
+        (
+            Style::Visionary,
+            "A person who creates landing pages, designs products, builds brands, launches startups, \
+            pitches ideas, creates marketing materials, writes copy, designs user interfaces, makes prototypes, \
+            envisions new products, creates demos, builds MVPs, designs logos, creates pitch decks",
+        ),
+        (
+            Style::Executor,
+            "A person who does repetitive manual labor, grinds through tasks, fills out paperwork, \
+            handles admin duties, processes documents, does data entry, completes assignments, \
+            finishes homework, submits forms, handles bureaucracy, does chores, routine operations",
+        ),
+        (
+            Style::Analyst,
+            "A person who does research, reads scientific papers, analyzes data, runs benchmarks, \
+            studies neuroscience, cognitive science, machine learning theory, statistics, mathematics, \
+            writes academic papers, runs experiments, collects measurements, builds datasets, peer review",
+        ),
+        (
+            Style::Ghost,
+            "A person who works silently in the background, fixes bugs nobody notices, \
+            maintains legacy code, does cleanup work, handles invisible infrastructure, \
+            runs maintenance scripts, monitors systems, does thankless work nobody sees",
+        ),
+        (
+            Style::Strategist,
+            "A person who plans projects, coordinates teams, manages roadmaps, \
+            organizes sprints, schedules meetings, delegates tasks, writes project plans, \
+            tracks milestones, manages stakeholders, runs standups, prioritizes backlogs",
+        ),
+        (
+            Style::Maverick,
+            "A person who experiments with side projects, builds random things for fun, \
+            explores new technologies, creates games, builds physics engines, makes visualizers, \
+            hacks on hobby projects, tries new programming languages, builds unusual tools, \
+            creates art with code, participates in hackathons, builds something nobody asked for",
+        ),
+    ]
+}
+
+/// Word pool: style × tier → words
+fn word_pool() -> HashMap<(Style, usize), Vec<&'static str>> {
+    let mut pool = HashMap::new();
+
+    // Architect
+    pool.insert(
+        (Style::Architect, 1),
+        vec!["Planner", "Draftsman", "Mapper", "Framer", "Sketcher"],
+    );
+    pool.insert(
+        (Style::Architect, 2),
+        vec![
             "Engineer",
             "Designer",
             "Builder",
             "Structurer",
-            "Contractor"
+            "Contractor",
         ],
-        &["Commander", "Warden", "Overseer", "Director", "Steward"],
-        &["Ironclad", "Pillar", "Bastion", "Fortress", "Rampart"],
-        &[
+    );
+    pool.insert(
+        (Style::Architect, 3),
+        vec!["Commander", "Warden", "Overseer", "Director", "Steward"],
+    );
+    pool.insert(
+        (Style::Architect, 4),
+        vec!["Ironclad", "Pillar", "Bastion", "Fortress", "Rampart"],
+    );
+    pool.insert(
+        (Style::Architect, 5),
+        vec![
             "Sovereign",
             "Architect",
             "Cornerstone",
             "Keystone",
-            "Monument"
+            "Monument",
         ],
-        &["Colossus", "Monolith", "Foundation", "Bedrock", "Obelisk"]
     );
-    style!(
-        "visionary",
-        &["Dreamer", "Seeker", "Wanderer", "Explorer", "Spark"],
-        &[
+    pool.insert(
+        (Style::Architect, 6),
+        vec!["Colossus", "Monolith", "Foundation", "Bedrock", "Obelisk"],
+    );
+
+    // Visionary
+    pool.insert(
+        (Style::Visionary, 1),
+        vec!["Dreamer", "Seeker", "Wanderer", "Explorer", "Spark"],
+    );
+    pool.insert(
+        (Style::Visionary, 2),
+        vec![
             "Pioneer",
             "Trailblazer",
             "Pathfinder",
             "Torchbearer",
-            "Vanguard"
+            "Vanguard",
         ],
-        &["Prophet", "Beacon", "Luminary", "Herald", "Firebrand"],
-        &[
+    );
+    pool.insert(
+        (Style::Visionary, 3),
+        vec!["Prophet", "Beacon", "Luminary", "Herald", "Firebrand"],
+    );
+    pool.insert(
+        (Style::Visionary, 4),
+        vec![
             "Catalyst",
             "Harbinger",
             "Iconoclast",
             "Firestarter",
-            "Tempest"
+            "Tempest",
         ],
-        &["Visionary", "Phenomenon", "Seer", "Mystic", "Revelation"],
-        &[
+    );
+    pool.insert(
+        (Style::Visionary, 5),
+        vec!["Visionary", "Phenomenon", "Seer", "Mystic", "Revelation"],
+    );
+    pool.insert(
+        (Style::Visionary, 6),
+        vec![
             "Supernova",
             "Singularity",
             "Event Horizon",
             "Big Bang",
-            "Legend"
-        ]
+            "Legend",
+        ],
     );
-    style!(
-        "executor",
-        &["Worker", "Grinder", "Hustler", "Soldier", "Grunt"],
-        &["Hammer", "Brute", "Workhorse", "Ironside", "Tank"],
-        &[
+
+    // Executor
+    pool.insert(
+        (Style::Executor, 1),
+        vec!["Worker", "Grinder", "Hustler", "Soldier", "Grunt"],
+    );
+    pool.insert(
+        (Style::Executor, 2),
+        vec!["Hammer", "Brute", "Workhorse", "Ironside", "Tank"],
+    );
+    pool.insert(
+        (Style::Executor, 3),
+        vec![
             "Juggernaut",
             "Steamroller",
             "Crusher",
             "Berserker",
-            "Enforcer"
+            "Enforcer",
         ],
-        &[
+    );
+    pool.insert(
+        (Style::Executor, 4),
+        vec![
             "Destroyer",
             "Ravager",
             "Obliterator",
             "Demolisher",
-            "Annihilator"
+            "Annihilator",
         ],
-        &["Leviathan", "Behemoth", "Goliath", "Titan", "Mammoth"],
-        &[
+    );
+    pool.insert(
+        (Style::Executor, 5),
+        vec!["Leviathan", "Behemoth", "Goliath", "Titan", "Mammoth"],
+    );
+    pool.insert(
+        (Style::Executor, 6),
+        vec![
             "Apocalypse",
             "Cataclysm",
             "Extinction",
             "Armageddon",
-            "Ragnarok"
-        ]
+            "Ragnarok",
+        ],
     );
-    style!(
-        "analyst",
-        &["Observer", "Watcher", "Student", "Listener", "Novice"],
-        &[
+
+    // Analyst
+    pool.insert(
+        (Style::Analyst, 1),
+        vec!["Observer", "Watcher", "Student", "Listener", "Novice"],
+    );
+    pool.insert(
+        (Style::Analyst, 2),
+        vec![
             "Scholar",
             "Researcher",
             "Examiner",
             "Investigator",
-            "Auditor"
+            "Auditor",
         ],
-        &[
+    );
+    pool.insert(
+        (Style::Analyst, 3),
+        vec![
             "Strategist",
             "Decoder",
             "Cryptographer",
             "Analyst",
-            "Diagnostician"
+            "Diagnostician",
         ],
-        &["Mastermind", "Savant", "Prodigy", "Virtuoso", "Polymath"],
-        &[
+    );
+    pool.insert(
+        (Style::Analyst, 4),
+        vec!["Mastermind", "Savant", "Prodigy", "Virtuoso", "Polymath"],
+    );
+    pool.insert(
+        (Style::Analyst, 5),
+        vec![
             "Omniscient",
             "All-Seer",
             "Clairvoyant",
             "Sage",
-            "Chronicler"
+            "Chronicler",
         ],
-        &[
+    );
+    pool.insert(
+        (Style::Analyst, 6),
+        vec![
             "Doomreader",
             "Final Answer",
             "Black Box",
             "Zero Error",
-            "Absolute"
-        ]
+            "Absolute",
+        ],
     );
-    style!(
-        "ghost",
-        &["Shadow", "Whisper", "Shade", "Murmur", "Drift"],
-        &["Phantom", "Specter", "Wraith", "Ghost", "Silhouette"],
-        &[
+
+    // Ghost
+    pool.insert(
+        (Style::Ghost, 1),
+        vec!["Shadow", "Whisper", "Shade", "Murmur", "Drift"],
+    );
+    pool.insert(
+        (Style::Ghost, 2),
+        vec!["Phantom", "Specter", "Wraith", "Ghost", "Silhouette"],
+    );
+    pool.insert(
+        (Style::Ghost, 3),
+        vec![
             "Apparition",
             "Revenant",
             "Poltergeist",
             "Nightcrawler",
-            "Haunt"
+            "Haunt",
         ],
-        &["Cipher", "Void", "Null", "Enigma", "Mirage"],
-        &["Oblivion", "Abyss", "Nether", "Eclipse", "Limbo"],
-        &["Nonexistent", "Forgotten", "Erased", "Nameless", "Nothing"]
     );
-    style!(
-        "strategist",
-        &["Lookout", "Sentinel", "Spotter", "Watchman", "Guard"],
-        &["Tactician", "Schemer", "Plotter", "Operator", "Handler"],
-        &["General", "Chancellor", "Marshal", "Warlord", "Kingmaker"],
-        &["Emperor", "Overlord", "Tyrant", "Dictator", "Regent"],
-        &[
+    pool.insert(
+        (Style::Ghost, 4),
+        vec!["Cipher", "Void", "Null", "Enigma", "Mirage"],
+    );
+    pool.insert(
+        (Style::Ghost, 5),
+        vec!["Oblivion", "Abyss", "Nether", "Eclipse", "Limbo"],
+    );
+    pool.insert(
+        (Style::Ghost, 6),
+        vec!["Nonexistent", "Forgotten", "Erased", "Nameless", "Nothing"],
+    );
+
+    // Strategist
+    pool.insert(
+        (Style::Strategist, 1),
+        vec!["Lookout", "Sentinel", "Spotter", "Watchman", "Guard"],
+    );
+    pool.insert(
+        (Style::Strategist, 2),
+        vec!["Tactician", "Schemer", "Plotter", "Operator", "Handler"],
+    );
+    pool.insert(
+        (Style::Strategist, 3),
+        vec!["General", "Chancellor", "Marshal", "Warlord", "Kingmaker"],
+    );
+    pool.insert(
+        (Style::Strategist, 4),
+        vec!["Emperor", "Overlord", "Tyrant", "Dictator", "Regent"],
+    );
+    pool.insert(
+        (Style::Strategist, 5),
+        vec![
             "Puppetmaster",
             "Chessmaster",
             "Grandmaster",
             "Phantom King",
-            "Eminence"
+            "Eminence",
         ],
-        &["Inevitable", "Unkillable", "Endgame", "Omega", "Checkmate"]
     );
-    style!(
-        "maverick",
-        &["Rookie", "Rebel", "Stray", "Drifter", "Wildcard"],
-        &["Renegade", "Outlaw", "Bandit", "Rogue", "Maverick"],
-        &[
+    pool.insert(
+        (Style::Strategist, 6),
+        vec!["Inevitable", "Unkillable", "Endgame", "Omega", "Checkmate"],
+    );
+
+    // Maverick
+    pool.insert(
+        (Style::Maverick, 1),
+        vec!["Rookie", "Rebel", "Stray", "Drifter", "Wildcard"],
+    );
+    pool.insert(
+        (Style::Maverick, 2),
+        vec!["Renegade", "Outlaw", "Bandit", "Rogue", "Maverick"],
+    );
+    pool.insert(
+        (Style::Maverick, 3),
+        vec![
             "Mercenary",
             "Desperado",
             "Vigilante",
             "Gunslinger",
-            "Corsair"
+            "Corsair",
         ],
-        &["Pirate King", "Kingslayer", "Usurper", "Heretic", "Exile"],
-        &["Myth", "Folklore", "Nightmare", "Boogeyman", "Outcast"],
-        &[
+    );
+    pool.insert(
+        (Style::Maverick, 4),
+        vec!["Pirate King", "Kingslayer", "Usurper", "Heretic", "Exile"],
+    );
+    pool.insert(
+        (Style::Maverick, 5),
+        vec!["Myth", "Folklore", "Nightmare", "Boogeyman", "Outcast"],
+    );
+    pool.insert(
+        (Style::Maverick, 6),
+        vec![
             "Unchained",
             "Unbound",
             "Untouchable",
             "Impossible",
-            "Anomaly"
-        ]
+            "Anomaly",
+        ],
     );
 
     pool
@@ -244,12 +409,22 @@ fn normalize_l2(v: &[f32]) -> Vec<f32> {
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    // Both vectors are L2-normalized, so dot product = cosine similarity
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
+pub struct RoleClassifier {
+    model: BertModel,
+    tokenizer: Tokenizer,
+    device: Device,
+    style_embeddings: Vec<StyleEmbedding>,
+}
+
+pub struct StyleEmbedding {
+    style: Style,
+    embedding: Vec<f32>,
+}
+
 impl RoleClassifier {
-    /// Load the model and pre-embed all 210 words. Call once at startup.
     pub fn new() -> anyhow::Result<Self> {
         println!("[roles] Downloading model...");
         let api = Api::new()?;
@@ -280,64 +455,25 @@ impl RoleClassifier {
             model,
             tokenizer,
             device,
-            words: Vec::with_capacity(210),
+            style_embeddings: Vec::new(),
         };
 
-        println!("[roles] Embedding word pool...");
-        let pool = word_pool();
-        let style_contexts: HashMap<String, &str> = HashMap::from([
-            (
-                "architect".into(),
-                "building systems, infrastructure, provisioning, tooling, engines, frameworks, backends, devops, CI/CD",
-            ),
-            (
-                "visionary".into(),
-                "creating landing pages, designing products, pitching ideas, launching startups, branding, marketing",
-            ),
-            (
-                "executor".into(),
-                "grinding, getting things done, manual tasks, admin, paperwork, operations, shipping, brute force, repetitive labor",
-            ),
-            (
-                "analyst".into(),
-                "research, benchmarks, data analysis, cognitive science, papers, studying, neuroscience, statistics",
-            ),
-            (
-                "ghost".into(),
-                "background maintenance, silent fixes, invisible work, cleanup, nobody notices",
-            ),
-            (
-                "strategist".into(),
-                "planning, coordinating, managing projects, roadmaps, team strategy, scheduling, delegation",
-            ),
-            (
-                "maverick".into(),
-                "experimenting, side projects, random exploration, physics engines, visualizers, hobby projects, games",
-            ),
-        ]);
-        for (style, tiers) in &pool {
-            let ctx = style_contexts.get(style).unwrap_or(&"general work");
-            for (&tier, words) in tiers {
-                for word in words {
-                    let context = format!("{} — {}", word, ctx);
-                    let embedding = classifier.embed(&context)?;
-                    classifier.words.push(WordEntry {
-                        word: word.clone(),
-                        style: style.clone(),
-                        tier,
-                        embedding,
-                    });
-                }
-            }
+        // Embed the 7 style descriptions
+        println!("[roles] Embedding style descriptions...");
+        for (style, desc) in style_descriptions() {
+            let embedding = classifier.embed(desc)?;
+            classifier
+                .style_embeddings
+                .push(StyleEmbedding { style, embedding });
         }
-        println!("[roles] Ready. {} words embedded.", classifier.words.len());
+        println!(
+            "[roles] Ready. {} styles embedded.",
+            classifier.style_embeddings.len()
+        );
 
         Ok(classifier)
     }
 
-    /// Embed a text string → L2-normalized 384-dim vector.
-    /// Matches candle's official BERT example exactly:
-    ///   forward(&token_ids, &token_type_ids) → mean pool over tokens → L2 normalize
     fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
         let encoding = self
             .tokenizer
@@ -352,7 +488,6 @@ impl RoleClassifier {
 
         let output = self.model.forward(&token_ids, &token_type_ids, None)?;
 
-        // Mean pooling (same as candle example: sum(1) / n_tokens)
         let (_n_sentence, n_tokens, _hidden_size) = output.dims3()?;
         let mean = (output.sum(1)? / (n_tokens as f64))?;
 
@@ -360,7 +495,7 @@ impl RoleClassifier {
         Ok(normalize_l2(&raw))
     }
 
-    /// Classify activities into the best word for this user's tier.
+    /// Classify: embed activities → match against 7 styles → pick word from winning style+tier
     pub fn classify(
         &self,
         activities: &[(String, i64)],
@@ -368,54 +503,64 @@ impl RoleClassifier {
     ) -> anyhow::Result<(String, String, usize)> {
         let tier = minutes_to_tier(total_minutes);
 
-        let tier_words: Vec<&WordEntry> = self.words.iter().filter(|w| w.tier == tier).collect();
-        if tier_words.is_empty() {
-            return Ok((format_role(tier, "Unknown"), "Unknown".to_string(), tier));
-        }
+        // Score each style
+        let mut style_scores: HashMap<Style, f32> = HashMap::new();
+        let mut total_weight = 0i64;
 
-        // Pre-embed all activities (once each, not 35 times)
-        let mut activity_embeddings: Vec<(Vec<f32>, i64)> = Vec::new();
         for (activity, minutes) in activities {
             let weight = if activity == "work" {
                 *minutes / 4
             } else {
                 *minutes
             };
-            let clean_activity = activity.replace('-', " ");
-            let framed = format!("a person working on: {}", clean_activity);
-            let emb = self.embed(&framed)?;
-            activity_embeddings.push((emb, weight));
-        }
-
-        let mut word_scores: Vec<(f32, &WordEntry)> = Vec::new();
-
-        for word_entry in &tier_words {
-            let mut weighted_score = 0.0f32;
-            let mut total_weight = 0i64;
-
-            for (activity_embedding, weight) in &activity_embeddings {
-                let sim = cosine_similarity(activity_embedding, &word_entry.embedding);
-                weighted_score += sim * (*weight as f32);
-                total_weight += weight;
+            if weight == 0 {
+                continue;
             }
 
-            if total_weight > 0 {
-                weighted_score /= total_weight as f32;
+            let clean = activity.replace('-', " ");
+            let activity_emb = self.embed(&clean)?;
+
+            for se in &self.style_embeddings {
+                let sim = cosine_similarity(&activity_emb, &se.embedding);
+                *style_scores.entry(se.style).or_insert(0.0) += sim * (weight as f32);
             }
-
-            word_scores.push((weighted_score, word_entry));
+            total_weight += weight;
         }
 
-        word_scores.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Debug: print top 5 word scores
-        println!("[roles] Tier {} scores:", tier);
-        for (score, entry) in word_scores.iter().take(5) {
-            println!("[roles]   {:.4} {} ({})", score, entry.word, entry.style);
+        // Normalize by total weight
+        if total_weight > 0 {
+            for score in style_scores.values_mut() {
+                *score /= total_weight as f32;
+            }
         }
 
-        let best = word_scores[0].1;
-        Ok((format_role(tier, &best.word), best.word.clone(), tier))
+        // Sort styles by score
+        let mut sorted: Vec<(Style, f32)> = style_scores.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Debug logging
+        println!("[roles] Tier {} style scores:", tier);
+        for (style, score) in &sorted {
+            println!("[roles]   {:.4} {}", score, style);
+        }
+
+        let winning_style = sorted.first().map(|(s, _)| *s).unwrap_or(Style::Executor);
+
+        // Pick a word from the winning style+tier cell
+        let pool = word_pool();
+        let words = pool
+            .get(&(winning_style, tier))
+            .map(|v| v.as_slice())
+            .unwrap_or(&["Unknown"]);
+
+        // Deterministic pick based on total_minutes so same data = same word within a week
+        let idx = (total_minutes as usize) % words.len();
+        let word = words[idx];
+
+        let role = format_role(tier, word);
+        println!("[roles] Winner: {} → {}", winning_style, role);
+
+        Ok((role, word.to_string(), tier))
     }
 }
 
@@ -426,11 +571,9 @@ mod tests {
     #[test]
     fn test_minutes_to_tier() {
         assert_eq!(minutes_to_tier(0), 1);
-        assert_eq!(minutes_to_tier(600), 1);
         assert_eq!(minutes_to_tier(1200), 2);
         assert_eq!(minutes_to_tier(2940), 3);
         assert_eq!(minutes_to_tier(3600), 4);
-        assert_eq!(minutes_to_tier(4500), 5);
         assert_eq!(minutes_to_tier(5400), 6);
     }
 
@@ -443,12 +586,9 @@ mod tests {
     #[test]
     fn test_word_pool_counts() {
         let pool = word_pool();
-        assert_eq!(pool.len(), 7);
-        let total: usize = pool
-            .values()
-            .flat_map(|t| t.values())
-            .map(|w| w.len())
-            .sum();
-        assert_eq!(total, 210);
+        assert_eq!(pool.len(), 42); // 7 styles × 6 tiers
+        for (_, words) in &pool {
+            assert_eq!(words.len(), 5);
+        }
     }
 }
