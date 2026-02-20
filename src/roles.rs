@@ -48,51 +48,45 @@ fn style_descriptions() -> Vec<(Style, &'static str)> {
     vec![
         (
             Style::Architect,
-            "A software engineer who builds backend systems, writes code for engines, bots, \
-            tools, collaborations platforms, git integrations, provisioning systems, access management, \
-            identity and access, IAM, authentication, authorization, real-time collaboration, \
-            discord bots, chat applications, websocket servers, database schemas, ORMs, migrations, \
-            REST APIs, GraphQL, microservices, monorepos, build tools, package managers",
+            "A person who builds engines, bots, tools, platforms, provisioning systems, \
+            collaboration tools, access management, real-time systems, database work, server code, \
+            automation scripts, integration code, developer tooling, infrastructure code",
         ),
         (
             Style::Visionary,
-            "A person who creates landing pages, designs products, builds brands, launches startups, \
-            pitches ideas, creates marketing materials, writes copy, designs user interfaces, makes prototypes, \
-            envisions new products, creates demos, builds MVPs, designs logos, creates pitch decks, \
-            SaaS applications, grade management, visual dashboards, user-facing products, onboarding flows",
+            "A person who creates landing pages, designs products, builds brands, \
+            launches new things, makes prototypes, builds user-facing applications, \
+            grade management tools, visual dashboards, presentation materials",
         ),
         (
             Style::Executor,
-            "A person who does manual labor without creativity, fills out paperwork, \
-            handles admin duties, processes documents, does data entry, \
-            submits forms, handles bureaucracy, does chores, routine clerical operations, \
-            filing, sorting, copying, scanning, mailing, scheduling appointments",
+            "A person who fills out paperwork, handles admin duties, processes documents, \
+            does data entry, submits forms, handles bureaucracy, does routine clerical tasks, \
+            filing, sorting, copying, scanning, scheduling appointments",
         ),
         (
             Style::Analyst,
-            "A person who does research, reads scientific papers, analyzes data, runs benchmarks, \
-            studies neuroscience, cognitive science, machine learning theory, statistics, mathematics, \
-            writes academic papers, diploma thesis, university assignments, coursework, \
-            runs experiments, collects measurements, builds datasets, peer review, HF diploma",
+            "A person who does research, studies neuroscience, cognitive science, \
+            analyzes benchmarks, writes academic papers, diploma thesis, university coursework, \
+            runs experiments, collects measurements, reads scientific papers",
         ),
         (
             Style::Ghost,
             "A person who works silently in the background, fixes bugs nobody notices, \
-            maintains legacy code, does cleanup work, handles invisible infrastructure, \
-            runs maintenance scripts, monitors systems, does thankless work nobody sees",
+            maintains old code, does cleanup, handles invisible maintenance, \
+            runs background scripts, monitors systems quietly",
         ),
         (
             Style::Strategist,
             "A person who plans projects, coordinates teams, manages roadmaps, \
-            organizes sprints, schedules meetings, delegates tasks, writes project plans, \
-            tracks milestones, manages stakeholders, runs standups, prioritizes backlogs",
+            organizes schedules, delegates tasks, writes project plans, \
+            tracks milestones, manages stakeholders, prioritizes tasks",
         ),
         (
             Style::Maverick,
             "A person who experiments with side projects, builds random things for fun, \
-            explores new technologies, creates games, builds physics engines, makes visualizers, \
-            hacks on hobby projects, tries new programming languages, builds unusual tools, \
-            creates art with code, participates in hackathons, builds something nobody asked for",
+            explores new technologies, creates games, physics engines, visualizers, \
+            hacks on hobby projects, tries new things, builds something unusual",
         ),
     ]
 }
