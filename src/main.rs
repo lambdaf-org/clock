@@ -48,9 +48,20 @@ impl EventHandler for Handler {
             let db = Arc::clone(&self.db);
             let classifier = Arc::clone(&self.classifier);
             let http = Arc::new(ctx.http.clone());
+            let channel = summary_channel_id();
             tokio::spawn(async move {
+                // Delete old ⚡ roles first
+                match cleanup_old_roles(&http, gid).await {
+                    Ok(n) => {
+                        if n > 0 {
+                            println!("[roles] Cleaned up {n} old ⚡ roles");
+                        }
+                    }
+                    Err(e) => eprintln!("[roles] Cleanup failed: {e}"),
+                }
+
                 println!("[roles] Test run: assigning roles on startup...");
-                match assign_weekly_roles(&db, &classifier, &http, gid).await {
+                match assign_weekly_roles(&db, &classifier, &http, gid, channel).await {
                     Ok(count) => println!("[roles] Test run done. Assigned to {count} users."),
                     Err(e) => eprintln!("[roles] Test run failed: {e}"),
                 }
@@ -137,7 +148,7 @@ async fn weekly_reset_loop(db: &Arc<Db>, classifier: &Arc<RoleClassifier>, token
 
         // ── Assign roles before archiving (data still in sessions table) ──
         if let Some(gid) = guild_id() {
-            match assign_weekly_roles(db, classifier, &http, gid).await {
+            match assign_weekly_roles(db, classifier, &http, gid, summary_channel).await {
                 Ok(count) => println!("[roles] Assigned roles to {count} users"),
                 Err(e) => eprintln!("[roles] Role assignment failed: {e}"),
             }
@@ -173,6 +184,22 @@ async fn weekly_reset_loop(db: &Arc<Db>, classifier: &Arc<RoleClassifier>, token
     }
 }
 
+/// Delete all existing ⚡ roles from the guild.
+async fn cleanup_old_roles(http: &Arc<Http>, guild_id: GuildId) -> anyhow::Result<usize> {
+    let guild_roles = guild_id.roles(http).await?;
+    let mut count = 0;
+    for (id, role) in &guild_roles {
+        if role.name.starts_with("⚡") {
+            if let Err(e) = guild_id.delete_role(http, *id).await {
+                eprintln!("[roles] Failed to delete old role '{}': {e}", role.name);
+            } else {
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
+}
+
 /// Assign Discord roles based on weekly activity.
 /// Removes old ⚡ roles and assigns new ones.
 async fn assign_weekly_roles(
@@ -180,30 +207,16 @@ async fn assign_weekly_roles(
     classifier: &Arc<RoleClassifier>,
     http: &Arc<Http>,
     guild_id: GuildId,
+    announce_channel: Option<ChannelId>,
 ) -> anyhow::Result<usize> {
     let _breakdown = db.activity_breakdown_weekly().await?;
 
-    // Group by user_id: we need user_id but breakdown gives username.
-    // We need to query user_ids separately.
     let user_activities = db.user_activity_breakdown_weekly().await?;
 
     let mut count = 0;
 
-    // Get all existing roles in the guild
-    let guild_roles = guild_id.roles(&http).await?;
-
-    // Find and remove old ⚡ roles
-    let old_role_ids: Vec<RoleId> = guild_roles
-        .iter()
-        .filter(|(_, role)| role.name.starts_with("⚡"))
-        .map(|(id, _)| *id)
-        .collect();
-
-    for role_id in &old_role_ids {
-        if let Err(e) = guild_id.delete_role(&http, *role_id).await {
-            eprintln!("[roles] Failed to delete old role: {e}");
-        }
-    }
+    // Delete old ⚡ roles
+    cleanup_old_roles(http, guild_id).await?;
 
     // Group activities by user_id
     let mut per_user: std::collections::HashMap<String, Vec<(String, i64)>> =
@@ -219,6 +232,8 @@ async fn assign_weekly_roles(
     }
 
     // Classify and assign
+    let mut assignments: Vec<(String, String)> = Vec::new(); // (user_id, role_name)
+
     for (user_id, activities) in &per_user {
         let total = user_totals.get(user_id).copied().unwrap_or(0);
         if total == 0 {
@@ -235,7 +250,7 @@ async fn assign_weekly_roles(
 
         // Create the role
         let role = guild_id
-            .create_role(&http, EditRole::new().name(&role_name).colour(0xf1c40f))
+            .create_role(http, EditRole::new().name(&role_name).colour(0xf1c40f))
             .await;
 
         match role {
@@ -252,12 +267,33 @@ async fn assign_weekly_roles(
                     eprintln!("[roles] Failed to assign role to {}: {e}", user_id);
                 } else {
                     println!("[roles] {} → {}", user_id, role_name);
+                    assignments.push((user_id.clone(), role_name));
                     count += 1;
                 }
             }
             Err(e) => {
                 eprintln!("[roles] Failed to create role '{}': {e}", role_name);
             }
+        }
+    }
+
+    // Announce in summary channel
+    if let Some(channel_id) = announce_channel {
+        if !assignments.is_empty() {
+            let mut lines: Vec<String> = Vec::new();
+            for (user_id, role_name) in &assignments {
+                lines.push(format!("<@{}> → **{}**", user_id, role_name));
+            }
+            let embed = CreateEmbed::new()
+                .color(0xf1c40f)
+                .title("⚡ Weekly Roles Assigned")
+                .description(lines.join("\n"))
+                .footer(CreateEmbedFooter::new(
+                    db::now_ch().format("%d.%m.%Y %H:%M").to_string(),
+                ));
+            let _ = channel_id
+                .send_message(http, CreateMessage::new().embed(embed))
+                .await;
         }
     }
 
