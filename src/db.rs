@@ -41,6 +41,14 @@ pub struct WeeklySummary {
     pub breakdown: Vec<ActivityEntry>,
 }
 
+#[derive(Debug)]
+pub struct UserActivityEntry {
+    pub user_id: String,
+    pub username: String,
+    pub activity: String,
+    pub total_minutes: i64,
+}
+
 pub fn now_ch() -> NaiveDateTime {
     Utc::now().with_timezone(&Zurich).naive_local()
 }
@@ -62,6 +70,28 @@ fn monday_of_current_week() -> String {
 }
 
 impl Db {
+    pub async fn user_activity_breakdown_weekly(&self) -> anyhow::Result<Vec<UserActivityEntry>> {
+        let monday = monday_of_current_week();
+        let rows = sqlx::query(
+            "SELECT user_id, username, activity, SUM(minutes) as total
+             FROM sessions
+             WHERE ended_at IS NOT NULL AND started_at >= $1
+             GROUP BY user_id, username, activity
+             ORDER BY user_id ASC, total DESC",
+        )
+        .bind(&monday)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| UserActivityEntry {
+                user_id: r.get("user_id"),
+                username: r.get("username"),
+                activity: r.get("activity"),
+                total_minutes: r.get("total"),
+            })
+            .collect())
+    }
     pub async fn open(database_url: &str) -> anyhow::Result<Self> {
         sqlx::any::install_default_drivers();
         let pool = AnyPoolOptions::new().connect(database_url).await?;
