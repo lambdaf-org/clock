@@ -50,9 +50,7 @@ fn style_descriptions() -> Vec<(Style, &'static str)> {
             Style::Architect,
             "A person who builds engines, bots, tools, platforms, provisioning systems, \
             collaboration tools, access management, real-time systems, database work, server code, \
-            automation scripts, integration code, developer tooling, infrastructure code, \
-            fullstack development, frontend, backend, deployment, testing, bug fixes, \
-            databases, postgres, monitoring, kafka, splunk, web applications, angular, spring",
+            automation scripts, integration code, developer tooling, infrastructure code",
         ),
         (
             Style::Visionary,
