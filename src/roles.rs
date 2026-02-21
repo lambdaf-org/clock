@@ -42,16 +42,107 @@ impl std::fmt::Display for Style {
     }
 }
 
-fn rank_chevrons(tier: usize) -> String {
-    "⟫".repeat(tier)
+// ---------------------------------------------------------------------------
+// Unicode font mapping
+// ---------------------------------------------------------------------------
+
+fn to_math_italic(c: char) -> char {
+    match c {
+        'A'..='Z' => char::from_u32(0x1D434 + (c as u32 - 'A' as u32)).unwrap_or(c),
+        'a'..='z' => {
+            if c == 'h' {
+                '\u{210E}'
+            } else {
+                char::from_u32(0x1D44E + (c as u32 - 'a' as u32)).unwrap_or(c)
+            }
+        }
+        _ => c,
+    }
 }
 
+fn to_math_bold(c: char) -> char {
+    match c {
+        'A'..='Z' => char::from_u32(0x1D400 + (c as u32 - 'A' as u32)).unwrap_or(c),
+        'a'..='z' => char::from_u32(0x1D41A + (c as u32 - 'a' as u32)).unwrap_or(c),
+        '0'..='9' => char::from_u32(0x1D7CE + (c as u32 - '0' as u32)).unwrap_or(c),
+        _ => c,
+    }
+}
+
+fn to_math_bold_sans(c: char) -> char {
+    match c {
+        'A'..='Z' => char::from_u32(0x1D5D4 + (c as u32 - 'A' as u32)).unwrap_or(c),
+        'a'..='z' => char::from_u32(0x1D5EE + (c as u32 - 'a' as u32)).unwrap_or(c),
+        '0'..='9' => char::from_u32(0x1D7EC + (c as u32 - '0' as u32)).unwrap_or(c),
+        _ => c,
+    }
+}
+
+fn to_fraktur(c: char) -> char {
+    match c {
+        'C' => '\u{212D}',
+        'H' => '\u{210C}',
+        'I' => '\u{2111}',
+        'R' => '\u{211C}',
+        'Z' => '\u{2128}',
+        'A' | 'B' | 'D'..='G' | 'J'..='Q' | 'S'..='Y' => {
+            char::from_u32(0x1D504 + (c as u32 - 'A' as u32)).unwrap_or(c)
+        }
+        'a'..='z' => char::from_u32(0x1D51E + (c as u32 - 'a' as u32)).unwrap_or(c),
+        _ => c,
+    }
+}
+
+fn apply_font(text: &str, mapper: fn(char) -> char) -> String {
+    text.chars().map(mapper).collect()
+}
+
+/// Tier 1-2: plain ASCII
+/// Tier 3:   math italic
+/// Tier 4:   bold serif
+/// Tier 5:   bold sans-serif
+/// Tier 6:   fraktur
+fn style_text(text: &str, tier: usize) -> String {
+    match tier {
+        1 | 2 => text.to_string(),
+        3 => apply_font(text, to_math_italic),
+        4 => apply_font(text, to_math_bold),
+        5 => apply_font(text, to_math_bold_sans),
+        6 => apply_font(text, to_fraktur),
+        _ => text.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Formatting
+// ---------------------------------------------------------------------------
+
+/// Tier 1: no chevrons, no brackets (naked)
+/// Tier 2-6: 〔⟫×(tier-1)〕
 pub fn format_role(tier: usize, word: &str) -> String {
-    format!("{} {}", rank_chevrons(tier), word)
+    let styled = style_text(word, tier);
+    if tier <= 1 {
+        styled
+    } else {
+        let chevrons = "⟫".repeat(tier - 1);
+        format!("〔{}〕{}", chevrons, styled)
+    }
 }
 
-/// Long, rich descriptions for each style. These are what the model compares against.
-/// Longer = better separation in embedding space.
+pub fn minutes_to_tier(minutes: i64) -> usize {
+    let mut tier = 1;
+    for &(t, threshold) in &TIER_THRESHOLDS {
+        if minutes >= threshold {
+            tier = t;
+        }
+    }
+    tier
+}
+
+// ---------------------------------------------------------------------------
+// Style descriptions
+// ---------------------------------------------------------------------------
+
 fn style_descriptions() -> Vec<(Style, &'static str)> {
     vec![
         (
@@ -99,11 +190,13 @@ fn style_descriptions() -> Vec<(Style, &'static str)> {
     ]
 }
 
-/// Word pool: style × tier → words
+// ---------------------------------------------------------------------------
+// Word pool
+// ---------------------------------------------------------------------------
+
 fn word_pool() -> HashMap<(Style, usize), Vec<&'static str>> {
     let mut pool = HashMap::new();
 
-    // Architect
     pool.insert(
         (Style::Architect, 1),
         vec!["Sketcher", "Planner", "Draftsman", "Mapper", "Framer"],
@@ -141,7 +234,6 @@ fn word_pool() -> HashMap<(Style, usize), Vec<&'static str>> {
         vec!["Bedrock", "Foundation", "Monolith", "Colossus", "Obelisk"],
     );
 
-    // Visionary
     pool.insert(
         (Style::Visionary, 1),
         vec!["Spark", "Dreamer", "Seeker", "Wanderer", "Explorer"],
@@ -185,7 +277,6 @@ fn word_pool() -> HashMap<(Style, usize), Vec<&'static str>> {
         ],
     );
 
-    // Executor
     pool.insert(
         (Style::Executor, 1),
         vec!["Grunt", "Soldier", "Worker", "Grinder", "Hustler"],
@@ -229,7 +320,6 @@ fn word_pool() -> HashMap<(Style, usize), Vec<&'static str>> {
         ],
     );
 
-    // Analyst
     pool.insert(
         (Style::Analyst, 1),
         vec!["Novice", "Listener", "Student", "Watcher", "Observer"],
@@ -279,7 +369,6 @@ fn word_pool() -> HashMap<(Style, usize), Vec<&'static str>> {
         ],
     );
 
-    // Ghost
     pool.insert(
         (Style::Ghost, 1),
         vec!["Drift", "Murmur", "Whisper", "Shade", "Shadow"],
@@ -311,7 +400,6 @@ fn word_pool() -> HashMap<(Style, usize), Vec<&'static str>> {
         vec!["Erased", "Forgotten", "Nameless", "Nonexistent", "Nothing"],
     );
 
-    // Strategist
     pool.insert(
         (Style::Strategist, 1),
         vec!["Spotter", "Lookout", "Watchman", "Sentinel", "Guard"],
@@ -343,7 +431,6 @@ fn word_pool() -> HashMap<(Style, usize), Vec<&'static str>> {
         vec!["Endgame", "Omega", "Unkillable", "Inevitable", "Checkmate"],
     );
 
-    // Maverick
     pool.insert(
         (Style::Maverick, 1),
         vec!["Stray", "Rookie", "Drifter", "Wildcard", "Rebel"],
@@ -384,15 +471,9 @@ fn word_pool() -> HashMap<(Style, usize), Vec<&'static str>> {
     pool
 }
 
-pub fn minutes_to_tier(minutes: i64) -> usize {
-    let mut tier = 1;
-    for &(t, threshold) in &TIER_THRESHOLDS {
-        if minutes >= threshold {
-            tier = t;
-        }
-    }
-    tier
-}
+// ---------------------------------------------------------------------------
+// Embedding / similarity
+// ---------------------------------------------------------------------------
 
 fn normalize_l2(v: &[f32]) -> Vec<f32> {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -405,6 +486,10 @@ fn normalize_l2(v: &[f32]) -> Vec<f32> {
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
+
+// ---------------------------------------------------------------------------
+// Classifier
+// ---------------------------------------------------------------------------
 
 pub struct RoleClassifier {
     model: BertModel,
@@ -489,7 +574,6 @@ impl RoleClassifier {
         Ok(normalize_l2(&raw))
     }
 
-    /// Classify: embed activities → match against 7 styles → pick word from winning style+tier
     pub fn classify(
         &self,
         activities: &[(String, i64)],
@@ -550,7 +634,6 @@ impl RoleClassifier {
         let mut sorted: Vec<(Style, f32)> = style_scores.into_iter().collect();
         sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Debug logging
         println!("[roles] Tier {} style scores:", tier);
         for (style, score) in &sorted {
             println!("[roles]   {:.4} {}", score, style);
@@ -564,7 +647,6 @@ impl RoleClassifier {
             .map(|v| v.as_slice())
             .unwrap_or(&["Unknown"]);
 
-        // Sub-rank: position within the tier determines which word (ascending)
         let tier_starts: [i64; 7] = [0, 0, 1200, 2400, 3600, 4500, 5400];
         let tier_ends: [i64; 7] = [0, 1200, 2400, 3600, 4500, 5400, 7200];
         let start = tier_starts[tier];
@@ -595,23 +677,72 @@ mod tests {
     }
 
     #[test]
-    fn test_format_role() {
-        assert_eq!(format_role(1, "Spark"), "⟫ Spark");
-        assert_eq!(format_role(3, "Commander"), "⟫⟫⟫ Commander");
-        assert_eq!(format_role(6, "Ragnarok"), "⟫⟫⟫⟫⟫⟫ Ragnarok");
+    fn test_format_role_tier1_naked() {
+        // Tier 1: no brackets, no chevrons, plain text
+        assert_eq!(format_role(1, "Spark"), "Spark");
+        assert_eq!(format_role(1, "Shadow"), "Shadow");
     }
 
     #[test]
-    fn test_rank_chevrons() {
-        assert_eq!(rank_chevrons(1), "⟫");
-        assert_eq!(rank_chevrons(4), "⟫⟫⟫⟫");
-        assert_eq!(rank_chevrons(6), "⟫⟫⟫⟫⟫⟫");
+    fn test_format_role_tier2_plain() {
+        // Tier 2: one chevron, plain text
+        assert_eq!(format_role(2, "Workhorse"), "〔⟫〕Workhorse");
+    }
+
+    #[test]
+    fn test_format_role_tier3_italic() {
+        let role = format_role(3, "Apparition");
+        assert!(role.starts_with("〔⟫⟫〕"));
+        assert!(!role.contains("Apparition")); // should be italic unicode
+    }
+
+    #[test]
+    fn test_format_role_tier4_bold() {
+        let role = format_role(4, "Fortress");
+        assert!(role.starts_with("〔⟫⟫⟫〕"));
+        assert!(!role.contains("Fortress")); // should be bold unicode
+    }
+
+    #[test]
+    fn test_format_role_tier5_bold_sans() {
+        let role = format_role(5, "Chessmaster");
+        assert!(role.starts_with("〔⟫⟫⟫⟫〕"));
+        assert!(!role.contains("Chessmaster")); // should be bold sans unicode
+    }
+
+    #[test]
+    fn test_format_role_tier6_fraktur() {
+        let role = format_role(6, "Nothing");
+        assert!(role.starts_with("〔⟫⟫⟫⟫⟫〕"));
+        assert!(!role.contains("Nothing")); // should be fraktur unicode
+    }
+
+    #[test]
+    fn test_chevron_counts() {
+        // Tier 1: no brackets at all
+        assert!(!format_role(1, "X").contains('〔'));
+        // Tier 2: 1 chevron
+        assert!(format_role(2, "X").contains("〔⟫〕"));
+        // Tier 6: 5 chevrons
+        assert!(format_role(6, "X").contains("〔⟫⟫⟫⟫⟫〕"));
+    }
+
+    #[test]
+    fn test_style_text_plain() {
+        assert_eq!(style_text("Hello", 1), "Hello");
+        assert_eq!(style_text("Hello", 2), "Hello");
+    }
+
+    #[test]
+    fn test_style_text_preserves_spaces() {
+        let result = style_text("Big Bang", 3);
+        assert!(result.contains(' '));
     }
 
     #[test]
     fn test_word_pool_counts() {
         let pool = word_pool();
-        assert_eq!(pool.len(), 42); // 7 styles × 6 tiers
+        assert_eq!(pool.len(), 42);
         for (_, words) in &pool {
             assert_eq!(words.len(), 5);
         }
