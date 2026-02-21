@@ -102,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
         weekly_reset_loop(&db_clone, &classifier_clone, &token_clone).await;
     });
 
-    let intents = GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
+    let intents = GatewayIntents::GUILDS | GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
     let mut client = Client::builder(&token, intents)
         .event_handler(Handler { db, classifier })
         .await
