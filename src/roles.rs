@@ -42,6 +42,14 @@ impl std::fmt::Display for Style {
     }
 }
 
+fn rank_chevrons(tier: usize) -> String {
+    "⟫".repeat(tier)
+}
+
+pub fn format_role(tier: usize, word: &str) -> String {
+    format!("{} {}", rank_chevrons(tier), word)
+}
+
 /// Long, rich descriptions for each style. These are what the model compares against.
 /// Longer = better separation in embedding space.
 fn style_descriptions() -> Vec<(Style, &'static str)> {
@@ -386,19 +394,6 @@ pub fn minutes_to_tier(minutes: i64) -> usize {
     tier
 }
 
-pub fn format_role(tier: usize, word: &str) -> String {
-    let roman = match tier {
-        1 => "I",
-        2 => "II",
-        3 => "III",
-        4 => "IV",
-        5 => "V",
-        6 => "VI",
-        _ => "?",
-    };
-    format!("⚡ [{}] {}", roman, word)
-}
-
 fn normalize_l2(v: &[f32]) -> Vec<f32> {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm == 0.0 {
@@ -457,7 +452,6 @@ impl RoleClassifier {
             style_embeddings: Vec::new(),
         };
 
-        // Embed the 7 style descriptions
         println!("[roles] Embedding style descriptions...");
         for (style, desc) in style_descriptions() {
             let embedding = classifier.embed(desc)?;
@@ -465,6 +459,7 @@ impl RoleClassifier {
                 .style_embeddings
                 .push(StyleEmbedding { style, embedding });
         }
+
         println!(
             "[roles] Ready. {} styles embedded.",
             classifier.style_embeddings.len()
@@ -502,23 +497,21 @@ impl RoleClassifier {
     ) -> anyhow::Result<(String, String, usize)> {
         let tier = minutes_to_tier(total_minutes);
 
-        // Score each style
         let mut style_scores: HashMap<Style, f32> = HashMap::new();
         let mut total_weight = 0i64;
 
         for (activity, minutes) in activities {
-            // Pure "work" has zero semantic signal — skip it entirely
             if activity == "work" {
                 continue;
             }
 
             let mut clean = activity.replace('-', " ");
-            // Strip "work" from anywhere — it adds no semantic signal
             clean = clean.replace("work", "").trim().to_string();
-            // Collapse multiple spaces
+
             while clean.contains("  ") {
                 clean = clean.replace("  ", " ");
             }
+
             if clean.is_empty() {
                 continue;
             }
@@ -531,20 +524,21 @@ impl RoleClassifier {
                 let sim = cosine_similarity(&activity_emb, &se.embedding);
                 *style_scores.entry(se.style).or_insert(0.0) += sim * (*minutes as f32);
             }
+
             total_weight += minutes;
         }
 
-        // Normalize by total weight
-        // If no activities had signal (all "work"), default to executor
         if total_weight == 0 {
             let pool = word_pool();
             let words = pool
                 .get(&(Style::Executor, tier))
                 .map(|v| v.as_slice())
                 .unwrap_or(&["Unknown"]);
+
             let idx = (total_minutes as usize) % words.len();
             let word = words[idx];
             let role = format_role(tier, word);
+
             println!("[roles] No signal, defaulting to executor → {}", role);
             return Ok((role, word.to_string(), tier));
         }
@@ -553,7 +547,6 @@ impl RoleClassifier {
             *score /= total_weight as f32;
         }
 
-        // Sort styles by score
         let mut sorted: Vec<(Style, f32)> = style_scores.into_iter().collect();
         sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -565,7 +558,6 @@ impl RoleClassifier {
 
         let winning_style = sorted.first().map(|(s, _)| *s).unwrap_or(Style::Executor);
 
-        // Pick a word from the winning style+tier cell
         let pool = word_pool();
         let words = pool
             .get(&(winning_style, tier))
@@ -604,8 +596,16 @@ mod tests {
 
     #[test]
     fn test_format_role() {
-        assert_eq!(format_role(3, "Commander"), "⚡ [III] Commander");
-        assert_eq!(format_role(6, "Ragnarok"), "⚡ [VI] Ragnarok");
+        assert_eq!(format_role(1, "Spark"), "⟫ Spark");
+        assert_eq!(format_role(3, "Commander"), "⟫⟫⟫ Commander");
+        assert_eq!(format_role(6, "Ragnarok"), "⟫⟫⟫⟫⟫⟫ Ragnarok");
+    }
+
+    #[test]
+    fn test_rank_chevrons() {
+        assert_eq!(rank_chevrons(1), "⟫");
+        assert_eq!(rank_chevrons(4), "⟫⟫⟫⟫");
+        assert_eq!(rank_chevrons(6), "⟫⟫⟫⟫⟫⟫");
     }
 
     #[test]
