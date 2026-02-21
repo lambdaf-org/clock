@@ -112,6 +112,29 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn create_role_above(
+    http: &Arc<Http>,
+    guild_id: GuildId,
+    name: &str,
+    colour: u32,
+    above_role_id: RoleId,
+) -> anyhow::Result<Role> {
+    let roles = guild_id.roles(http).await?;
+    let above = roles
+        .get(&above_role_id)
+        .ok_or_else(|| anyhow::anyhow!("Anchor role not found"))?;
+
+    let role = guild_id
+        .create_role(http, EditRole::new().name(name).colour(colour))
+        .await?;
+
+    guild_id
+        .edit_role_position(http, role.id, above.position + 1)
+        .await?;
+
+    Ok(role)
+}
+
 async fn weekly_reset_loop(db: &Arc<Db>, classifier: &Arc<RoleClassifier>, token: &str) {
     use chrono::{Datelike, Duration, Timelike, Weekday};
     use tokio::time::{Duration as TokioDuration, sleep};
@@ -234,6 +257,20 @@ async fn assign_weekly_roles(
     // Classify and assign
     let mut assignments: Vec<(String, String)> = Vec::new(); // (user_id, role_name)
 
+    let anchor_role_id: RoleId = match std::env::var("ANCHOR_ROLE_ID") {
+        Ok(val) => match val.parse::<u64>() {
+            Ok(id) => RoleId::new(id),
+            Err(_) => {
+                eprintln!("[roles] ANCHOR_ROLE_ID is not a valid u64");
+                return Ok(0);
+            }
+        },
+        Err(_) => {
+            eprintln!("[roles] ANCHOR_ROLE_ID not set");
+            return Ok(0);
+        }
+    };
+
     for (user_id, activities) in &per_user {
         let total = user_totals.get(user_id).copied().unwrap_or(0);
         if total == 0 {
@@ -260,9 +297,7 @@ async fn assign_weekly_roles(
         };
 
         // Create the role
-        let role = guild_id
-            .create_role(http, EditRole::new().name(&role_name).colour(colour))
-            .await;
+        let role = create_role_above(http, guild_id, &role_name, colour, anchor_role_id).await;
 
         match role {
             Ok(role) => {
