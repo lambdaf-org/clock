@@ -5,11 +5,23 @@ use std::sync::Arc;
 const HELP: &str = r#"**Commands**
 `/clock in <activity>` — start tracking
 `/clock out` — stop tracking
+`/clock switch <activity>` — switch to new activity
 `/clock status` — your session
 `/clock who` — who's working
 `/clock leaderboard` — weekly + all-time
 `/clock stats` — activity breakdown
+`/clock recent` — your last 5 activities
 `/clock rename <old> > <new>` — rename + merge activity
+
+**Aliases**
+`/clock alias <key> <activity>` — set personal alias
+`/clock aliases` — list your aliases
+`/clock unalias <key>` — remove alias
+
+**Admin** (Manage Guild)
+`/clock galias <key> <activity>` — set global alias
+`/clock galiases` — list global aliases
+`/clock gunalias <key>` — remove global alias
 `/clock help`"#;
 
 const COLOR_GREEN: u32 = 0x2ecc71;
@@ -24,6 +36,11 @@ const BAR_FULL: &str = "█";
 const BAR_EMPTY: &str = "░";
 const BAR_WIDTH: usize = 16;
 
+/// Extract category from activity name (first prefix before '-').
+fn activity_category(activity: &str) -> String {
+    activity.split('-').next().unwrap_or(activity).to_string()
+}
+
 pub async fn handle_command(ctx: &Context, msg: &Message, db: &Arc<Db>) {
     if !msg.content.starts_with("/clock") {
         return;
@@ -36,16 +53,31 @@ pub async fn handle_command(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         return;
     }
 
+    let user_id = msg.author.id.to_string();
+
     if rest.starts_with("in ") {
-        let activity = rest.strip_prefix("in ").unwrap().trim();
-        if activity.is_empty() {
+        let activity_input = rest.strip_prefix("in ").unwrap().trim();
+        if activity_input.is_empty() {
             let _ = msg
                 .reply(&ctx.http, "What are you working on? `/clock in <activity>`")
                 .await;
             return;
         }
-        let activity = crate::normalize::normalize_activity(activity);
+        // Resolve alias, then normalize
+        let resolved = db.resolve_alias(&user_id, activity_input).await.unwrap_or_else(|_| activity_input.to_string());
+        let activity = crate::normalize::normalize_activity(&resolved);
         handle_clock_in(ctx, msg, db, &activity).await;
+    } else if rest.starts_with("switch ") {
+        let activity_input = rest.strip_prefix("switch ").unwrap().trim();
+        if activity_input.is_empty() {
+            let _ = msg
+                .reply(&ctx.http, "Switch to what? `/clock switch <activity>`")
+                .await;
+            return;
+        }
+        let resolved = db.resolve_alias(&user_id, activity_input).await.unwrap_or_else(|_| activity_input.to_string());
+        let activity = crate::normalize::normalize_activity(&resolved);
+        handle_switch(ctx, msg, db, &activity).await;
     } else if rest == "out" {
         handle_clock_out(ctx, msg, db).await;
     } else if rest == "status" {
@@ -56,9 +88,27 @@ pub async fn handle_command(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         handle_leaderboard(ctx, msg, db).await;
     } else if rest == "stats" {
         handle_stats(ctx, msg, db).await;
+    } else if rest == "recent" {
+        handle_recent(ctx, msg, db).await;
     } else if rest.starts_with("rename ") {
         let args = rest.strip_prefix("rename ").unwrap().trim();
         handle_rename(ctx, msg, db, args).await;
+    } else if rest.starts_with("alias ") {
+        let args = rest.strip_prefix("alias ").unwrap().trim();
+        handle_alias(ctx, msg, db, args).await;
+    } else if rest == "aliases" {
+        handle_aliases(ctx, msg, db).await;
+    } else if rest.starts_with("unalias ") {
+        let keyword = rest.strip_prefix("unalias ").unwrap().trim();
+        handle_unalias(ctx, msg, db, keyword).await;
+    } else if rest.starts_with("galias ") {
+        let args = rest.strip_prefix("galias ").unwrap().trim();
+        handle_galias(ctx, msg, db, args).await;
+    } else if rest == "galiases" {
+        handle_galiases(ctx, msg, db).await;
+    } else if rest.starts_with("gunalias ") {
+        let keyword = rest.strip_prefix("gunalias ").unwrap().trim();
+        handle_gunalias(ctx, msg, db, keyword).await;
     } else {
         let _ = msg.reply(&ctx.http, HELP).await;
     }
@@ -418,25 +468,27 @@ async fn handle_stats(ctx: &Context, msg: &Message, db: &Arc<Db>) {
 
     let breakdown_text = format_activity_breakdown(&weekly);
 
-    let mut activity_totals: std::collections::HashMap<String, i64> =
+    // Group by category (prefix before first '-')
+    let mut category_totals: std::collections::HashMap<String, i64> =
         std::collections::HashMap::new();
     for e in &weekly {
-        *activity_totals.entry(e.activity.clone()).or_insert(0) += e.total_minutes;
+        let cat = activity_category(&e.activity);
+        *category_totals.entry(cat).or_insert(0) += e.total_minutes;
     }
-    let mut sorted: Vec<_> = activity_totals.into_iter().collect();
+    let mut sorted: Vec<_> = category_totals.into_iter().collect();
     sorted.sort_by(|a, b| b.1.cmp(&a.1));
 
     let max_act = sorted.first().map(|(_, m)| *m).unwrap_or(1);
     let mut top_acts = String::new();
-    for (act, mins) in sorted.iter().take(8) {
+    for (cat, mins) in sorted.iter().take(8) {
         let bar = make_bar(*mins, max_act);
-        top_acts += &format!("`{}` {} — {}\n", bar, act, format_duration(*mins));
+        top_acts += &format!("`{}` {} — {}\n", bar, cat, format_duration(*mins));
     }
 
     let embed = CreateEmbed::new()
         .color(COLOR_PURPLE)
         .title(format!("📊 Activity Stats — {}", week_label))
-        .field("🔥 Top Activities", &top_acts, false)
+        .field("🔥 Top Categories", &top_acts, false)
         .field("\u{200b}", "\u{200b}", false)
         .field("👤 Per Person", &breakdown_text, false)
         .footer(CreateEmbedFooter::new(swiss_timestamp()));
@@ -528,6 +580,328 @@ async fn handle_rename(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
                 .title("⚠️ Activity Not Found")
                 .description(format!("No sessions found for **{}**", old_name))
                 .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+    }
+}
+
+async fn handle_switch(ctx: &Context, msg: &Message, db: &Arc<Db>, activity: &str) {
+    let user_id = msg.author.id.to_string();
+    let username = msg.author.display_name().to_string();
+
+    // Check if currently clocked in
+    let session = db.active_session(&user_id).await.ok().flatten();
+    let was_clocked_in = session.is_some();
+    let prev_activity = session.map(|s| s.activity);
+
+    // Clock out if needed
+    if was_clocked_in {
+        let _ = db.clock_out(&user_id).await;
+    }
+
+    // Clock in to new activity
+    match db.clock_in(&user_id, &username, activity).await {
+        Ok(()) => {
+            let desc = if let Some(prev) = prev_activity {
+                format!("**{}** switched from **{}** → **{}**", username, prev, activity)
+            } else {
+                format!("**{}** started working on **{}**", username, activity)
+            };
+            let embed = CreateEmbed::new()
+                .color(COLOR_GREEN)
+                .title("🔄 Switched")
+                .description(desc)
+                .footer(CreateEmbedFooter::new(format!(
+                    "{} · /clock out when done",
+                    swiss_timestamp()
+                )));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+        Err(e) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_RED)
+                .title("⚠️ Switch Failed")
+                .description(format!("Error: {}", e));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+    }
+}
+
+async fn handle_recent(ctx: &Context, msg: &Message, db: &Arc<Db>) {
+    let user_id = msg.author.id.to_string();
+    let username = msg.author.display_name().to_string();
+
+    match db.recent_activities(&user_id, 5).await {
+        Ok(activities) if !activities.is_empty() => {
+            let mut lines = String::new();
+            for (i, act) in activities.iter().enumerate() {
+                lines += &format!("**{}.** {}\n", i + 1, act);
+            }
+            let embed = CreateEmbed::new()
+                .color(COLOR_BLUE)
+                .title(format!("🕐 {}'s Recent Activities", username))
+                .description(lines)
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+        _ => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_GRAY)
+                .title("🕐 No Recent Activities")
+                .description("Clock in to start tracking.");
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+    }
+}
+
+async fn handle_alias(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
+    let user_id = msg.author.id.to_string();
+
+    // Parse "keyword activity" (first word is keyword, rest is activity)
+    let parts: Vec<&str> = args.splitn(2, ' ').collect();
+    if parts.len() < 2 || parts[0].is_empty() || parts[1].trim().is_empty() {
+        let embed = CreateEmbed::new()
+            .color(COLOR_RED)
+            .title("⚠️ Invalid Syntax")
+            .description("Usage: `/clock alias <keyword> <activity>`");
+        let _ = msg
+            .channel_id
+            .send_message(&ctx.http, CreateMessage::new().embed(embed))
+            .await;
+        return;
+    }
+
+    let keyword = parts[0].to_lowercase();
+    let activity = crate::normalize::normalize_activity(parts[1].trim());
+
+    match db.set_user_alias(&user_id, &keyword, &activity).await {
+        Ok(()) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_GREEN)
+                .title("✅ Alias Set")
+                .description(format!("`{}` → **{}**", keyword, activity))
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+        Err(e) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_RED)
+                .title("⚠️ Failed to Set Alias")
+                .description(format!("Error: {}", e));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+    }
+}
+
+async fn handle_aliases(ctx: &Context, msg: &Message, db: &Arc<Db>) {
+    let user_id = msg.author.id.to_string();
+    let username = msg.author.display_name().to_string();
+
+    match db.list_user_aliases(&user_id).await {
+        Ok(aliases) if !aliases.is_empty() => {
+            let mut lines = String::new();
+            for (keyword, activity) in &aliases {
+                lines += &format!("`{}` → {}\n", keyword, activity);
+            }
+            let embed = CreateEmbed::new()
+                .color(COLOR_BLUE)
+                .title(format!("🔗 {}'s Aliases", username))
+                .description(lines)
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+        _ => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_GRAY)
+                .title("🔗 No Aliases")
+                .description("Set one with `/clock alias <key> <activity>`");
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+    }
+}
+
+async fn handle_unalias(ctx: &Context, msg: &Message, db: &Arc<Db>, keyword: &str) {
+    let user_id = msg.author.id.to_string();
+    let keyword = keyword.to_lowercase();
+
+    match db.delete_user_alias(&user_id, &keyword).await {
+        Ok(true) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_GREEN)
+                .title("✅ Alias Removed")
+                .description(format!("`{}` removed", keyword));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+        _ => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_GRAY)
+                .title("ℹ️ Alias Not Found")
+                .description(format!("No alias `{}` exists", keyword));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+    }
+}
+
+/// Check if user has Manage Guild or Administrator permission
+async fn has_admin_perms(ctx: &Context, msg: &Message) -> bool {
+    if let Some(guild_id) = msg.guild_id {
+        if let Ok(member) = guild_id.member(&ctx.http, msg.author.id).await {
+            if let Ok(perms) = member.permissions(&ctx.cache) {
+                return perms.manage_guild() || perms.administrator();
+            }
+        }
+    }
+    false
+}
+
+async fn handle_galias(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
+    if !has_admin_perms(ctx, msg).await {
+        let embed = CreateEmbed::new()
+            .color(COLOR_RED)
+            .title("⛔ Permission Denied")
+            .description("Requires **Manage Guild** or **Administrator**");
+        let _ = msg
+            .channel_id
+            .send_message(&ctx.http, CreateMessage::new().embed(embed))
+            .await;
+        return;
+    }
+
+    let parts: Vec<&str> = args.splitn(2, ' ').collect();
+    if parts.len() < 2 || parts[0].is_empty() || parts[1].trim().is_empty() {
+        let embed = CreateEmbed::new()
+            .color(COLOR_RED)
+            .title("⚠️ Invalid Syntax")
+            .description("Usage: `/clock galias <keyword> <activity>`");
+        let _ = msg
+            .channel_id
+            .send_message(&ctx.http, CreateMessage::new().embed(embed))
+            .await;
+        return;
+    }
+
+    let keyword = parts[0].to_lowercase();
+    let activity = crate::normalize::normalize_activity(parts[1].trim());
+
+    match db.set_global_alias(&keyword, &activity).await {
+        Ok(()) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_GOLD)
+                .title("✅ Global Alias Set")
+                .description(format!("`{}` → **{}**", keyword, activity))
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+        Err(e) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_RED)
+                .title("⚠️ Failed to Set Global Alias")
+                .description(format!("Error: {}", e));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+    }
+}
+
+async fn handle_galiases(ctx: &Context, msg: &Message, db: &Arc<Db>) {
+    match db.list_global_aliases().await {
+        Ok(aliases) if !aliases.is_empty() => {
+            let mut lines = String::new();
+            for (keyword, activity) in &aliases {
+                lines += &format!("`{}` → {}\n", keyword, activity);
+            }
+            let embed = CreateEmbed::new()
+                .color(COLOR_GOLD)
+                .title("🌐 Global Aliases")
+                .description(lines)
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+        _ => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_GRAY)
+                .title("🌐 No Global Aliases")
+                .description("Admins can set with `/clock galias <key> <activity>`");
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+    }
+}
+
+async fn handle_gunalias(ctx: &Context, msg: &Message, db: &Arc<Db>, keyword: &str) {
+    if !has_admin_perms(ctx, msg).await {
+        let embed = CreateEmbed::new()
+            .color(COLOR_RED)
+            .title("⛔ Permission Denied")
+            .description("Requires **Manage Guild** or **Administrator**");
+        let _ = msg
+            .channel_id
+            .send_message(&ctx.http, CreateMessage::new().embed(embed))
+            .await;
+        return;
+    }
+
+    let keyword = keyword.to_lowercase();
+
+    match db.delete_global_alias(&keyword).await {
+        Ok(true) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_GOLD)
+                .title("✅ Global Alias Removed")
+                .description(format!("`{}` removed", keyword));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+        _ => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_GRAY)
+                .title("ℹ️ Global Alias Not Found")
+                .description(format!("No global alias `{}` exists", keyword));
             let _ = msg
                 .channel_id
                 .send_message(&ctx.http, CreateMessage::new().embed(embed))
