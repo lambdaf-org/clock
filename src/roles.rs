@@ -98,73 +98,73 @@ fn word_pool() -> HashMap<(Style, usize), Vec<&'static str>> {
     // Architect
     pool.insert(
         (Style::Architect, 1),
-        vec!["Planner", "Draftsman", "Mapper", "Framer", "Sketcher"],
+        vec!["Sketcher", "Planner", "Draftsman", "Mapper", "Framer"],
     );
     pool.insert(
         (Style::Architect, 2),
         vec![
-            "Engineer",
-            "Designer",
             "Builder",
             "Structurer",
+            "Engineer",
             "Contractor",
+            "Designer",
         ],
     );
     pool.insert(
         (Style::Architect, 3),
-        vec!["Commander", "Warden", "Overseer", "Director", "Steward"],
+        vec!["Warden", "Steward", "Overseer", "Director", "Commander"],
     );
     pool.insert(
         (Style::Architect, 4),
-        vec!["Ironclad", "Pillar", "Bastion", "Fortress", "Rampart"],
+        vec!["Rampart", "Bastion", "Pillar", "Fortress", "Ironclad"],
     );
     pool.insert(
         (Style::Architect, 5),
         vec![
-            "Sovereign",
-            "Architect",
-            "Cornerstone",
             "Keystone",
+            "Cornerstone",
+            "Architect",
+            "Sovereign",
             "Monument",
         ],
     );
     pool.insert(
         (Style::Architect, 6),
-        vec!["Colossus", "Monolith", "Foundation", "Bedrock", "Obelisk"],
+        vec!["Bedrock", "Foundation", "Monolith", "Colossus", "Obelisk"],
     );
 
     // Visionary
     pool.insert(
         (Style::Visionary, 1),
-        vec!["Dreamer", "Seeker", "Wanderer", "Explorer", "Spark"],
+        vec!["Spark", "Dreamer", "Seeker", "Wanderer", "Explorer"],
     );
     pool.insert(
         (Style::Visionary, 2),
         vec![
-            "Pioneer",
-            "Trailblazer",
-            "Pathfinder",
             "Torchbearer",
+            "Pathfinder",
+            "Trailblazer",
+            "Pioneer",
             "Vanguard",
         ],
     );
     pool.insert(
         (Style::Visionary, 3),
-        vec!["Prophet", "Beacon", "Luminary", "Herald", "Firebrand"],
+        vec!["Herald", "Beacon", "Firebrand", "Luminary", "Prophet"],
     );
     pool.insert(
         (Style::Visionary, 4),
         vec![
             "Catalyst",
-            "Harbinger",
+            "Tempest",
             "Iconoclast",
             "Firestarter",
-            "Tempest",
+            "Harbinger",
         ],
     );
     pool.insert(
         (Style::Visionary, 5),
-        vec!["Visionary", "Phenomenon", "Seer", "Mystic", "Revelation"],
+        vec!["Seer", "Mystic", "Visionary", "Phenomenon", "Revelation"],
     );
     pool.insert(
         (Style::Visionary, 6),
@@ -180,41 +180,41 @@ fn word_pool() -> HashMap<(Style, usize), Vec<&'static str>> {
     // Executor
     pool.insert(
         (Style::Executor, 1),
-        vec!["Worker", "Grinder", "Hustler", "Soldier", "Grunt"],
+        vec!["Grunt", "Soldier", "Worker", "Grinder", "Hustler"],
     );
     pool.insert(
         (Style::Executor, 2),
-        vec!["Hammer", "Brute", "Workhorse", "Ironside", "Tank"],
+        vec!["Mule", "Bulldog", "Workhorse", "Ironside", "Tank"],
     );
     pool.insert(
         (Style::Executor, 3),
         vec![
-            "Juggernaut",
-            "Steamroller",
+            "Enforcer",
             "Crusher",
             "Berserker",
-            "Enforcer",
+            "Steamroller",
+            "Juggernaut",
         ],
     );
     pool.insert(
         (Style::Executor, 4),
         vec![
-            "Destroyer",
-            "Ravager",
-            "Obliterator",
             "Demolisher",
+            "Ravager",
+            "Destroyer",
+            "Obliterator",
             "Annihilator",
         ],
     );
     pool.insert(
         (Style::Executor, 5),
-        vec!["Leviathan", "Behemoth", "Goliath", "Titan", "Mammoth"],
+        vec!["Goliath", "Mammoth", "Titan", "Behemoth", "Leviathan"],
     );
     pool.insert(
         (Style::Executor, 6),
         vec![
-            "Apocalypse",
             "Cataclysm",
+            "Apocalypse",
             "Extinction",
             "Armageddon",
             "Ragnarok",
@@ -224,151 +224,151 @@ fn word_pool() -> HashMap<(Style, usize), Vec<&'static str>> {
     // Analyst
     pool.insert(
         (Style::Analyst, 1),
-        vec!["Observer", "Watcher", "Student", "Listener", "Novice"],
+        vec!["Novice", "Listener", "Student", "Watcher", "Observer"],
     );
     pool.insert(
         (Style::Analyst, 2),
         vec![
-            "Scholar",
-            "Researcher",
-            "Examiner",
-            "Investigator",
             "Auditor",
+            "Examiner",
+            "Researcher",
+            "Investigator",
+            "Scholar",
         ],
     );
     pool.insert(
         (Style::Analyst, 3),
         vec![
-            "Strategist",
             "Decoder",
-            "Cryptographer",
             "Analyst",
             "Diagnostician",
+            "Strategist",
+            "Cryptographer",
         ],
     );
     pool.insert(
         (Style::Analyst, 4),
-        vec!["Mastermind", "Savant", "Prodigy", "Virtuoso", "Polymath"],
+        vec!["Prodigy", "Savant", "Virtuoso", "Polymath", "Mastermind"],
     );
     pool.insert(
         (Style::Analyst, 5),
         vec![
-            "Omniscient",
-            "All-Seer",
-            "Clairvoyant",
-            "Sage",
             "Chronicler",
+            "Sage",
+            "Clairvoyant",
+            "All-Seer",
+            "Omniscient",
         ],
     );
     pool.insert(
         (Style::Analyst, 6),
         vec![
-            "Doomreader",
-            "Final Answer",
             "Black Box",
             "Zero Error",
+            "Doomreader",
             "Absolute",
+            "Final Answer",
         ],
     );
 
     // Ghost
     pool.insert(
         (Style::Ghost, 1),
-        vec!["Shadow", "Whisper", "Shade", "Murmur", "Drift"],
+        vec!["Drift", "Murmur", "Whisper", "Shade", "Shadow"],
     );
     pool.insert(
         (Style::Ghost, 2),
-        vec!["Phantom", "Specter", "Wraith", "Ghost", "Silhouette"],
+        vec!["Silhouette", "Ghost", "Specter", "Phantom", "Wraith"],
     );
     pool.insert(
         (Style::Ghost, 3),
         vec![
-            "Apparition",
-            "Revenant",
-            "Poltergeist",
-            "Nightcrawler",
             "Haunt",
+            "Nightcrawler",
+            "Apparition",
+            "Poltergeist",
+            "Revenant",
         ],
     );
     pool.insert(
         (Style::Ghost, 4),
-        vec!["Cipher", "Void", "Null", "Enigma", "Mirage"],
+        vec!["Mirage", "Enigma", "Cipher", "Null", "Void"],
     );
     pool.insert(
         (Style::Ghost, 5),
-        vec!["Oblivion", "Abyss", "Nether", "Eclipse", "Limbo"],
+        vec!["Limbo", "Eclipse", "Nether", "Abyss", "Oblivion"],
     );
     pool.insert(
         (Style::Ghost, 6),
-        vec!["Nonexistent", "Forgotten", "Erased", "Nameless", "Nothing"],
+        vec!["Erased", "Forgotten", "Nameless", "Nonexistent", "Nothing"],
     );
 
     // Strategist
     pool.insert(
         (Style::Strategist, 1),
-        vec!["Lookout", "Sentinel", "Spotter", "Watchman", "Guard"],
+        vec!["Spotter", "Lookout", "Watchman", "Sentinel", "Guard"],
     );
     pool.insert(
         (Style::Strategist, 2),
-        vec!["Tactician", "Schemer", "Plotter", "Operator", "Handler"],
+        vec!["Operator", "Handler", "Plotter", "Schemer", "Tactician"],
     );
     pool.insert(
         (Style::Strategist, 3),
-        vec!["General", "Chancellor", "Marshal", "Warlord", "Kingmaker"],
+        vec!["Marshal", "Warlord", "General", "Chancellor", "Kingmaker"],
     );
     pool.insert(
         (Style::Strategist, 4),
-        vec!["Emperor", "Overlord", "Tyrant", "Dictator", "Regent"],
+        vec!["Regent", "Dictator", "Tyrant", "Overlord", "Emperor"],
     );
     pool.insert(
         (Style::Strategist, 5),
         vec![
-            "Puppetmaster",
-            "Chessmaster",
-            "Grandmaster",
             "Phantom King",
             "Eminence",
+            "Grandmaster",
+            "Chessmaster",
+            "Puppetmaster",
         ],
     );
     pool.insert(
         (Style::Strategist, 6),
-        vec!["Inevitable", "Unkillable", "Endgame", "Omega", "Checkmate"],
+        vec!["Endgame", "Omega", "Unkillable", "Inevitable", "Checkmate"],
     );
 
     // Maverick
     pool.insert(
         (Style::Maverick, 1),
-        vec!["Rookie", "Rebel", "Stray", "Drifter", "Wildcard"],
+        vec!["Stray", "Rookie", "Drifter", "Wildcard", "Rebel"],
     );
     pool.insert(
         (Style::Maverick, 2),
-        vec!["Renegade", "Outlaw", "Bandit", "Rogue", "Maverick"],
+        vec!["Rogue", "Bandit", "Outlaw", "Maverick", "Renegade"],
     );
     pool.insert(
         (Style::Maverick, 3),
         vec![
-            "Mercenary",
-            "Desperado",
-            "Vigilante",
             "Gunslinger",
             "Corsair",
+            "Vigilante",
+            "Mercenary",
+            "Desperado",
         ],
     );
     pool.insert(
         (Style::Maverick, 4),
-        vec!["Pirate King", "Kingslayer", "Usurper", "Heretic", "Exile"],
+        vec!["Exile", "Heretic", "Usurper", "Kingslayer", "Pirate King"],
     );
     pool.insert(
         (Style::Maverick, 5),
-        vec!["Myth", "Folklore", "Nightmare", "Boogeyman", "Outcast"],
+        vec!["Outcast", "Boogeyman", "Nightmare", "Folklore", "Myth"],
     );
     pool.insert(
         (Style::Maverick, 6),
         vec![
-            "Unchained",
             "Unbound",
-            "Untouchable",
+            "Unchained",
             "Impossible",
+            "Untouchable",
             "Anomaly",
         ],
     );
