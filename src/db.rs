@@ -153,6 +153,30 @@ impl Db {
         )";
         sqlx::query(ddl4).execute(&pool).await?;
 
+        // User aliases table (per-user shortcuts)
+        let ddl5 = format!(
+            "CREATE TABLE IF NOT EXISTS user_aliases (
+                id          {pk},
+                user_id     TEXT NOT NULL,
+                keyword     TEXT NOT NULL,
+                activity    TEXT NOT NULL,
+                UNIQUE(user_id, keyword)
+            )",
+            pk = pk_type
+        );
+        sqlx::query(&ddl5).execute(&pool).await?;
+
+        // Global aliases table (server-wide shortcuts)
+        let ddl6 = format!(
+            "CREATE TABLE IF NOT EXISTS global_aliases (
+                id          {pk},
+                keyword     TEXT NOT NULL UNIQUE,
+                activity    TEXT NOT NULL
+            )",
+            pk = pk_type
+        );
+        sqlx::query(&ddl6).execute(&pool).await?;
+
         // Indexes
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_sess_user ON sessions(user_id)")
             .execute(&pool)
@@ -675,6 +699,154 @@ impl Db {
         }
 
         Ok((sessions_updated, archive_rows_merged))
+    }
+
+    // ── Alias methods ──────────────────────────────────────────
+
+    /// Get a user alias
+    pub async fn get_user_alias(&self, user_id: &str, keyword: &str) -> anyhow::Result<Option<String>> {
+        let row = sqlx::query("SELECT activity FROM user_aliases WHERE user_id = $1 AND keyword = $2")
+            .bind(user_id)
+            .bind(keyword)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get("activity")))
+    }
+
+    /// Set a user alias (upsert)
+    pub async fn set_user_alias(&self, user_id: &str, keyword: &str, activity: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM user_aliases WHERE user_id = $1 AND keyword = $2")
+            .bind(user_id)
+            .bind(keyword)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("INSERT INTO user_aliases (user_id, keyword, activity) VALUES ($1, $2, $3)")
+            .bind(user_id)
+            .bind(keyword)
+            .bind(activity)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete a user alias
+    pub async fn delete_user_alias(&self, user_id: &str, keyword: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM user_aliases WHERE user_id = $1 AND keyword = $2")
+            .bind(user_id)
+            .bind(keyword)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// List all user aliases
+    pub async fn list_user_aliases(&self, user_id: &str) -> anyhow::Result<Vec<(String, String)>> {
+        let rows = sqlx::query("SELECT keyword, activity FROM user_aliases WHERE user_id = $1 ORDER BY keyword")
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.iter().map(|r| (r.get("keyword"), r.get("activity"))).collect())
+    }
+
+    /// Get a global alias
+    pub async fn get_global_alias(&self, keyword: &str) -> anyhow::Result<Option<String>> {
+        let row = sqlx::query("SELECT activity FROM global_aliases WHERE keyword = $1")
+            .bind(keyword)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.get("activity")))
+    }
+
+    /// Set a global alias (upsert)
+    pub async fn set_global_alias(&self, keyword: &str, activity: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM global_aliases WHERE keyword = $1")
+            .bind(keyword)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("INSERT INTO global_aliases (keyword, activity) VALUES ($1, $2)")
+            .bind(keyword)
+            .bind(activity)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete a global alias
+    pub async fn delete_global_alias(&self, keyword: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM global_aliases WHERE keyword = $1")
+            .bind(keyword)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// List all global aliases
+    pub async fn list_global_aliases(&self) -> anyhow::Result<Vec<(String, String)>> {
+        let rows = sqlx::query("SELECT keyword, activity FROM global_aliases ORDER BY keyword")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.iter().map(|r| (r.get("keyword"), r.get("activity"))).collect())
+    }
+
+    /// Resolve activity input through alias chain: user alias -> global alias -> raw
+    pub async fn resolve_alias(&self, user_id: &str, input: &str) -> anyhow::Result<String> {
+        // First check user alias
+        if let Some(activity) = self.get_user_alias(user_id, input).await? {
+            return Ok(activity);
+        }
+        // Then check global alias
+        if let Some(activity) = self.get_global_alias(input).await? {
+            return Ok(activity);
+        }
+        // Return input as-is
+        Ok(input.to_string())
+    }
+
+    /// Get the last N distinct activities for a user (most recent first).
+    /// Pulls from both sessions and activity_archive to survive weekly archiving.
+    pub async fn recent_activities(&self, user_id: &str, limit: usize) -> anyhow::Result<Vec<String>> {
+        // Get activities from sessions (with timestamps for recency)
+        let sessions_rows = sqlx::query(
+            "SELECT DISTINCT activity, MAX(started_at) as last_used
+             FROM sessions WHERE user_id = $1
+             GROUP BY activity
+             ORDER BY last_used DESC"
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut activities: Vec<(String, String)> = sessions_rows
+            .iter()
+            .map(|r| (r.get::<String, _>("activity"), r.get::<String, _>("last_used")))
+            .collect();
+
+        // Get activities from archive (use week_label as proxy for recency)
+        let archive_rows = sqlx::query(
+            "SELECT DISTINCT activity, MAX(week_label) as last_week
+             FROM activity_archive WHERE user_id = $1
+             GROUP BY activity
+             ORDER BY last_week DESC"
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        for row in &archive_rows {
+            let activity: String = row.get("activity");
+            let week: String = row.get("last_week");
+            // Only add if not already in list from sessions
+            if !activities.iter().any(|(a, _)| a == &activity) {
+                // Use week_label as timestamp proxy (sorted alphabetically works for KW format)
+                activities.push((activity, format!("archive-{}", week)));
+            }
+        }
+
+        // Sort by recency (sessions timestamps come first, archives after)
+        activities.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Return just the activity names, limited
+        Ok(activities.into_iter().take(limit).map(|(a, _)| a).collect())
     }
 }
 
