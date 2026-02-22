@@ -385,7 +385,15 @@ async fn assign_weekly_roles(
                 let member = guild_id.member(http, member_id).await.ok();
                 let display_name = member
                     .as_ref()
-                    .map(|m| m.user.name.clone())
+                    .map(|m| {
+                        if let Some(nick) = &m.nick {
+                            nick.clone()
+                        } else if let Some(global) = &m.user.global_name {
+                            global.clone()
+                        } else {
+                            m.user.name.clone()
+                        }
+                    })
                     .unwrap_or_else(|| user_id.clone());
 
                 let nickname = build_nickname(tier, &display_name);
