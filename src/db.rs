@@ -70,28 +70,6 @@ fn monday_of_current_week() -> String {
 }
 
 impl Db {
-    pub async fn user_activity_breakdown_weekly(&self) -> anyhow::Result<Vec<UserActivityEntry>> {
-        let monday = monday_of_current_week();
-        let rows = sqlx::query(
-            "SELECT user_id, username, activity, SUM(minutes) as total
-             FROM sessions
-             WHERE ended_at IS NOT NULL AND started_at >= $1
-             GROUP BY user_id, username, activity
-             ORDER BY user_id ASC, total DESC",
-        )
-        .bind(&monday)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| UserActivityEntry {
-                user_id: r.get("user_id"),
-                username: r.get("username"),
-                activity: r.get("activity"),
-                total_minutes: r.get("total"),
-            })
-            .collect())
-    }
     pub async fn open(database_url: &str) -> anyhow::Result<Self> {
         sqlx::any::install_default_drivers();
         let pool = AnyPoolOptions::new().connect(database_url).await?;
@@ -103,10 +81,6 @@ impl Db {
         } else {
             "INTEGER PRIMARY KEY AUTOINCREMENT"
         };
-
-        // For upsert syntax: Postgres uses ON CONFLICT, SQLite uses INSERT OR REPLACE
-        // We use INSERT OR REPLACE for metadata which works on SQLite;
-        // for Postgres we use ON CONFLICT. We'll handle this in normalize_activities.
 
         let ddl = format!(
             "CREATE TABLE IF NOT EXISTS sessions (
@@ -153,7 +127,6 @@ impl Db {
         )";
         sqlx::query(ddl4).execute(&pool).await?;
 
-        // User aliases table (per-user shortcuts)
         let ddl5 = format!(
             "CREATE TABLE IF NOT EXISTS user_aliases (
                 id          {pk},
@@ -166,7 +139,6 @@ impl Db {
         );
         sqlx::query(&ddl5).execute(&pool).await?;
 
-        // Global aliases table (server-wide shortcuts)
         let ddl6 = format!(
             "CREATE TABLE IF NOT EXISTS global_aliases (
                 id          {pk},
@@ -177,7 +149,6 @@ impl Db {
         );
         sqlx::query(&ddl6).execute(&pool).await?;
 
-        // Indexes
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_sess_user ON sessions(user_id)")
             .execute(&pool)
             .await
@@ -274,9 +245,10 @@ impl Db {
     pub async fn leaderboard_weekly(&self) -> anyhow::Result<Vec<LeaderboardEntry>> {
         let monday = monday_of_current_week();
         let rows = sqlx::query(
-            "SELECT username, SUM(minutes) as total FROM sessions
+            "SELECT MAX(username) as username, SUM(minutes) as total
+             FROM sessions
              WHERE ended_at IS NOT NULL AND started_at >= $1
-             GROUP BY user_id, username ORDER BY total DESC LIMIT 15",
+             GROUP BY user_id ORDER BY total DESC LIMIT 15",
         )
         .bind(&monday)
         .fetch_all(&self.pool)
@@ -292,13 +264,13 @@ impl Db {
 
     pub async fn leaderboard_alltime(&self) -> anyhow::Result<Vec<LeaderboardEntry>> {
         let rows = sqlx::query(
-            "SELECT username, SUM(mins) as total FROM (
+            "SELECT MAX(username) as username, SUM(mins) as total FROM (
                 SELECT user_id, username, SUM(minutes) as mins FROM sessions
                     WHERE ended_at IS NOT NULL GROUP BY user_id, username
                 UNION ALL
                 SELECT user_id, username, SUM(total_min) as mins FROM weekly_archive
                     GROUP BY user_id, username
-             ) sub GROUP BY user_id, username ORDER BY total DESC LIMIT 15",
+             ) sub GROUP BY user_id ORDER BY total DESC LIMIT 15",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -314,8 +286,8 @@ impl Db {
     pub async fn archive_week(&self, week_label: &str) -> anyhow::Result<()> {
         sqlx::query(
             "INSERT INTO weekly_archive (user_id, username, week_label, total_min)
-             SELECT user_id, username, $1, SUM(minutes) FROM sessions
-             WHERE ended_at IS NOT NULL GROUP BY user_id, username",
+             SELECT user_id, MAX(username), $1, SUM(minutes) FROM sessions
+             WHERE ended_at IS NOT NULL GROUP BY user_id",
         )
         .bind(week_label)
         .execute(&self.pool)
@@ -323,8 +295,8 @@ impl Db {
 
         sqlx::query(
             "INSERT INTO activity_archive (user_id, username, week_label, activity, total_min)
-             SELECT user_id, username, $1, activity, SUM(minutes) FROM sessions
-             WHERE ended_at IS NOT NULL GROUP BY user_id, username, activity",
+             SELECT user_id, MAX(username), $1, activity, SUM(minutes) FROM sessions
+             WHERE ended_at IS NOT NULL GROUP BY user_id, activity",
         )
         .bind(week_label)
         .execute(&self.pool)
@@ -340,10 +312,10 @@ impl Db {
     pub async fn activity_breakdown_weekly(&self) -> anyhow::Result<Vec<ActivityEntry>> {
         let monday = monday_of_current_week();
         let rows = sqlx::query(
-            "SELECT username, activity, SUM(minutes) as total, COUNT(*) as sessions
+            "SELECT MAX(username) as username, activity, SUM(minutes) as total, COUNT(*) as sessions
              FROM sessions
              WHERE ended_at IS NOT NULL AND started_at >= $1
-             GROUP BY user_id, username, activity
+             GROUP BY user_id, activity
              ORDER BY username ASC, total DESC",
         )
         .bind(&monday)
@@ -362,15 +334,15 @@ impl Db {
 
     pub async fn activity_breakdown_alltime(&self) -> anyhow::Result<Vec<ActivityEntry>> {
         let rows = sqlx::query(
-            "SELECT username, activity, SUM(mins) as total, SUM(cnt) as sessions FROM (
-                SELECT username, activity, SUM(minutes) as mins, COUNT(*) as cnt
+            "SELECT MAX(username) as username, activity, SUM(mins) as total, SUM(cnt) as sessions FROM (
+                SELECT user_id, username, activity, SUM(minutes) as mins, COUNT(*) as cnt
                     FROM sessions WHERE ended_at IS NOT NULL
-                    GROUP BY user_id, username, activity
+                    GROUP BY user_id, activity
                 UNION ALL
-                SELECT username, activity, SUM(total_min) as mins, 0 as cnt
+                SELECT user_id, username, activity, SUM(total_min) as mins, 0 as cnt
                     FROM activity_archive
-                    GROUP BY user_id, username, activity
-             ) sub GROUP BY username, activity ORDER BY username ASC, total DESC",
+                    GROUP BY user_id, activity
+             ) sub GROUP BY user_id, activity ORDER BY username ASC, total DESC",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -400,9 +372,9 @@ impl Db {
         let unique_workers: i64 = totals.get("unique_workers");
 
         let mvp = sqlx::query(
-            "SELECT username, SUM(minutes) as total FROM sessions
+            "SELECT MAX(username) as username, SUM(minutes) as total FROM sessions
              WHERE ended_at IS NOT NULL AND started_at >= $1
-             GROUP BY user_id, username ORDER BY total DESC LIMIT 1",
+             GROUP BY user_id ORDER BY total DESC LIMIT 1",
         )
         .bind(&monday)
         .fetch_optional(&self.pool)
@@ -436,9 +408,9 @@ impl Db {
         });
 
         let breakdown_rows = sqlx::query(
-            "SELECT username, activity, SUM(minutes) as total
+            "SELECT MAX(username) as username, activity, SUM(minutes) as total
              FROM sessions WHERE ended_at IS NOT NULL AND started_at >= $1
-             GROUP BY user_id, username, activity ORDER BY username ASC, total DESC",
+             GROUP BY user_id, activity ORDER BY username ASC, total DESC",
         )
         .bind(&monday)
         .fetch_all(&self.pool)
@@ -486,11 +458,31 @@ impl Db {
             .collect())
     }
 
+    pub async fn user_activity_breakdown_weekly(&self) -> anyhow::Result<Vec<UserActivityEntry>> {
+        let monday = monday_of_current_week();
+        let rows = sqlx::query(
+            "SELECT user_id, MAX(username) as username, activity, SUM(minutes) as total
+             FROM sessions
+             WHERE ended_at IS NOT NULL AND started_at >= $1
+             GROUP BY user_id, activity
+             ORDER BY user_id ASC, total DESC",
+        )
+        .bind(&monday)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| UserActivityEntry {
+                user_id: r.get("user_id"),
+                username: r.get("username"),
+                activity: r.get("activity"),
+                total_minutes: r.get("total"),
+            })
+            .collect())
+    }
+
     /// Normalize all activity names in `sessions` and `activity_archive` tables.
-    /// Call once on startup to clean up historical data.
-    /// Uses a version flag in `metadata` to run only once.
     pub async fn normalize_activities(&self) -> anyhow::Result<()> {
-        // Check if normalization has already been run
         let already_normalized = sqlx::query("SELECT value FROM metadata WHERE key = $1")
             .bind("activities_normalized")
             .fetch_optional(&self.pool)
@@ -502,7 +494,6 @@ impl Db {
             return Ok(());
         }
 
-        // Step 1: Normalize activities in sessions table
         let rows = sqlx::query("SELECT DISTINCT activity FROM sessions")
             .fetch_all(&self.pool)
             .await?;
@@ -518,7 +509,6 @@ impl Db {
             }
         }
 
-        // Step 2: Normalize activities in activity_archive table
         let rows = sqlx::query("SELECT DISTINCT activity FROM activity_archive")
             .fetch_all(&self.pool)
             .await?;
@@ -534,7 +524,6 @@ impl Db {
             }
         }
 
-        // Step 3: Merge duplicate rows in activity_archive
         let dupes = sqlx::query(
             "SELECT user_id, week_label, activity, COUNT(*) as cnt
              FROM activity_archive
@@ -580,8 +569,6 @@ impl Db {
             }
         }
 
-        // Mark normalization as complete
-        // Use a delete+insert pattern that works on both SQLite and Postgres
         sqlx::query("DELETE FROM metadata WHERE key = $1")
             .bind("activities_normalized")
             .execute(&self.pool)
@@ -595,15 +582,12 @@ impl Db {
         Ok(())
     }
 
-    /// Rename all of a user's sessions with `old_activity` to `new_activity`.
-    /// Returns (sessions_updated, archive_rows_merged) counts.
     pub async fn rename_activity(
         &self,
         user_id: &str,
         old_activity: &str,
         new_activity: &str,
     ) -> anyhow::Result<(u64, u64)> {
-        // Check that the user actually has sessions or archive entries with old_activity
         let has_sessions: i64 = sqlx::query(
             "SELECT COUNT(*) as cnt FROM sessions WHERE user_id = $1 AND activity = $2",
         )
@@ -626,7 +610,6 @@ impl Db {
             anyhow::bail!("no sessions found with that activity");
         }
 
-        // Update sessions table
         let sessions_result =
             sqlx::query("UPDATE sessions SET activity = $1 WHERE user_id = $2 AND activity = $3")
                 .bind(new_activity)
@@ -636,7 +619,6 @@ impl Db {
                 .await?;
         let sessions_updated = sessions_result.rows_affected();
 
-        // Update activity_archive table
         sqlx::query(
             "UPDATE activity_archive SET activity = $1 WHERE user_id = $2 AND activity = $3",
         )
@@ -646,7 +628,6 @@ impl Db {
         .execute(&self.pool)
         .await?;
 
-        // Merge duplicate archive rows for this user
         let dupes = sqlx::query(
             "SELECT user_id, week_label, activity, COUNT(*) as cnt
              FROM activity_archive
@@ -703,18 +684,26 @@ impl Db {
 
     // ── Alias methods ──────────────────────────────────────────
 
-    /// Get a user alias
-    pub async fn get_user_alias(&self, user_id: &str, keyword: &str) -> anyhow::Result<Option<String>> {
-        let row = sqlx::query("SELECT activity FROM user_aliases WHERE user_id = $1 AND keyword = $2")
-            .bind(user_id)
-            .bind(keyword)
-            .fetch_optional(&self.pool)
-            .await?;
+    pub async fn get_user_alias(
+        &self,
+        user_id: &str,
+        keyword: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let row =
+            sqlx::query("SELECT activity FROM user_aliases WHERE user_id = $1 AND keyword = $2")
+                .bind(user_id)
+                .bind(keyword)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row.map(|r| r.get("activity")))
     }
 
-    /// Set a user alias (upsert)
-    pub async fn set_user_alias(&self, user_id: &str, keyword: &str, activity: &str) -> anyhow::Result<()> {
+    pub async fn set_user_alias(
+        &self,
+        user_id: &str,
+        keyword: &str,
+        activity: &str,
+    ) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM user_aliases WHERE user_id = $1 AND keyword = $2")
             .bind(user_id)
             .bind(keyword)
@@ -729,7 +718,6 @@ impl Db {
         Ok(())
     }
 
-    /// Delete a user alias
     pub async fn delete_user_alias(&self, user_id: &str, keyword: &str) -> anyhow::Result<bool> {
         let result = sqlx::query("DELETE FROM user_aliases WHERE user_id = $1 AND keyword = $2")
             .bind(user_id)
@@ -739,16 +727,19 @@ impl Db {
         Ok(result.rows_affected() > 0)
     }
 
-    /// List all user aliases
     pub async fn list_user_aliases(&self, user_id: &str) -> anyhow::Result<Vec<(String, String)>> {
-        let rows = sqlx::query("SELECT keyword, activity FROM user_aliases WHERE user_id = $1 ORDER BY keyword")
-            .bind(user_id)
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows.iter().map(|r| (r.get("keyword"), r.get("activity"))).collect())
+        let rows = sqlx::query(
+            "SELECT keyword, activity FROM user_aliases WHERE user_id = $1 ORDER BY keyword",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("keyword"), r.get("activity")))
+            .collect())
     }
 
-    /// Get a global alias
     pub async fn get_global_alias(&self, keyword: &str) -> anyhow::Result<Option<String>> {
         let row = sqlx::query("SELECT activity FROM global_aliases WHERE keyword = $1")
             .bind(keyword)
@@ -757,7 +748,6 @@ impl Db {
         Ok(row.map(|r| r.get("activity")))
     }
 
-    /// Set a global alias (upsert)
     pub async fn set_global_alias(&self, keyword: &str, activity: &str) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM global_aliases WHERE keyword = $1")
             .bind(keyword)
@@ -771,7 +761,6 @@ impl Db {
         Ok(())
     }
 
-    /// Delete a global alias
     pub async fn delete_global_alias(&self, keyword: &str) -> anyhow::Result<bool> {
         let result = sqlx::query("DELETE FROM global_aliases WHERE keyword = $1")
             .bind(keyword)
@@ -780,37 +769,36 @@ impl Db {
         Ok(result.rows_affected() > 0)
     }
 
-    /// List all global aliases
     pub async fn list_global_aliases(&self) -> anyhow::Result<Vec<(String, String)>> {
         let rows = sqlx::query("SELECT keyword, activity FROM global_aliases ORDER BY keyword")
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.iter().map(|r| (r.get("keyword"), r.get("activity"))).collect())
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("keyword"), r.get("activity")))
+            .collect())
     }
 
-    /// Resolve activity input through alias chain: user alias -> global alias -> raw
     pub async fn resolve_alias(&self, user_id: &str, input: &str) -> anyhow::Result<String> {
-        // First check user alias
         if let Some(activity) = self.get_user_alias(user_id, input).await? {
             return Ok(activity);
         }
-        // Then check global alias
         if let Some(activity) = self.get_global_alias(input).await? {
             return Ok(activity);
         }
-        // Return input as-is
         Ok(input.to_string())
     }
 
-    /// Get the last N distinct activities for a user (most recent first).
-    /// Pulls from both sessions and activity_archive to survive weekly archiving.
-    pub async fn recent_activities(&self, user_id: &str, limit: usize) -> anyhow::Result<Vec<String>> {
-        // Get activities from sessions (with timestamps for recency)
+    pub async fn recent_activities(
+        &self,
+        user_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<String>> {
         let sessions_rows = sqlx::query(
             "SELECT DISTINCT activity, MAX(started_at) as last_used
              FROM sessions WHERE user_id = $1
              GROUP BY activity
-             ORDER BY last_used DESC"
+             ORDER BY last_used DESC",
         )
         .bind(user_id)
         .fetch_all(&self.pool)
@@ -818,15 +806,19 @@ impl Db {
 
         let mut activities: Vec<(String, String)> = sessions_rows
             .iter()
-            .map(|r| (r.get::<String, _>("activity"), r.get::<String, _>("last_used")))
+            .map(|r| {
+                (
+                    r.get::<String, _>("activity"),
+                    r.get::<String, _>("last_used"),
+                )
+            })
             .collect();
 
-        // Get activities from archive (use week_label as proxy for recency)
         let archive_rows = sqlx::query(
             "SELECT DISTINCT activity, MAX(week_label) as last_week
              FROM activity_archive WHERE user_id = $1
              GROUP BY activity
-             ORDER BY last_week DESC"
+             ORDER BY last_week DESC",
         )
         .bind(user_id)
         .fetch_all(&self.pool)
@@ -835,24 +827,19 @@ impl Db {
         for row in &archive_rows {
             let activity: String = row.get("activity");
             let week: String = row.get("last_week");
-            // Only add if not already in list from sessions
             if !activities.iter().any(|(a, _)| a == &activity) {
-                // Use week_label as timestamp proxy (sorted alphabetically works for KW format)
                 activities.push((activity, format!("archive-{}", week)));
             }
         }
 
-        // Sort by recency (sessions timestamps come first, archives after)
         activities.sort_by(|a, b| b.1.cmp(&a.1));
 
-        // Return just the activity names, limited
         Ok(activities.into_iter().take(limit).map(|(a, _)| a).collect())
     }
 }
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -882,7 +869,6 @@ mod tests {
         assert_eq!(sessions_updated, 1);
         assert_eq!(archive_merged, 0);
 
-        // Verify the rename worked
         let row = sqlx::query("SELECT activity FROM sessions WHERE user_id = $1")
             .bind(user_id)
             .fetch_one(&db.pool)
