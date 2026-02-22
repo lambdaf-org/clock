@@ -42,21 +42,6 @@ impl EventHandler for Handler {
                 .send_message(&ctx.http, CreateMessage::new().embed(embed))
                 .await;
         }
-
-        // ── Test run: assign roles immediately on startup ──
-        if let Some(gid) = guild_id() {
-            let db = Arc::clone(&self.db);
-            let classifier = Arc::clone(&self.classifier);
-            let http = Arc::new(ctx.http.clone());
-            let channel = summary_channel_id();
-            tokio::spawn(async move {
-                println!("[roles] Test run: assigning roles on startup...");
-                match assign_weekly_roles(&db, &classifier, &http, gid, channel).await {
-                    Ok(count) => println!("[roles] Test run done. Assigned to {count} users."),
-                    Err(e) => eprintln!("[roles] Test run failed: {e}"),
-                }
-            });
-        }
     }
 }
 
