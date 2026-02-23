@@ -74,6 +74,17 @@ async fn main() -> anyhow::Result<()> {
     let classifier_clone = Arc::clone(&classifier);
     let token_clone = token.clone();
     tokio::spawn(async move {
+        // On startup: assign roles from last archived week if missed
+        let http = Arc::new(Http::new(&token_clone));
+        if let Some(gid) = guild_id() {
+            let summary_channel: Option<ChannelId> = env::var("SUMMARY_CHANNEL")
+                .ok()
+                .and_then(|s| s.parse().ok());
+            maybe_assign_from_archive(&db_clone, &classifier_clone, &http, gid, summary_channel)
+                .await;
+        }
+
+        // Then continue with the normal weekly loop
         weekly_reset_loop(&db_clone, &classifier_clone, &token_clone).await;
     });
 
@@ -109,6 +120,69 @@ async fn create_role_above(
         .await?;
 
     Ok(role)
+}
+
+/// On startup, check if roles were assigned for the last archived week.
+/// If not, assign them from archived data.
+async fn maybe_assign_from_archive(
+    db: &Arc<Db>,
+    classifier: &Arc<RoleClassifier>,
+    http: &Arc<Http>,
+    guild_id: GuildId,
+    announce_channel: Option<ChannelId>,
+) {
+    let week_label = match db.last_archived_week().await {
+        Ok(Some(wl)) => wl,
+        Ok(None) => {
+            println!("[roles] No archived weeks found, skipping startup role assignment");
+            return;
+        }
+        Err(e) => {
+            eprintln!("[roles] Failed to query last archived week: {e}");
+            return;
+        }
+    };
+
+    match db.roles_assigned_for_week(&week_label).await {
+        Ok(true) => {
+            println!("[roles] Roles already assigned for {week_label}, skipping");
+            return;
+        }
+        Ok(false) => {
+            println!("[roles] Roles NOT yet assigned for {week_label}, assigning from archive...");
+        }
+        Err(e) => {
+            eprintln!("[roles] Failed to check role assignment status: {e}");
+            return;
+        }
+    }
+
+    let user_activities = match db.user_activity_breakdown_for_week(&week_label).await {
+        Ok(data) if !data.is_empty() => data,
+        Ok(_) => {
+            println!("[roles] No activity data in archive for {week_label}");
+            return;
+        }
+        Err(e) => {
+            eprintln!("[roles] Failed to load archive for {week_label}: {e}");
+            return;
+        }
+    };
+
+    match assign_weekly_roles(
+        db,
+        classifier,
+        http,
+        guild_id,
+        announce_channel,
+        user_activities,
+        &week_label,
+    )
+    .await
+    {
+        Ok(count) => println!("[roles] Startup: assigned roles to {count} users from {week_label}"),
+        Err(e) => eprintln!("[roles] Startup role assignment failed: {e}"),
+    }
 }
 
 async fn weekly_reset_loop(db: &Arc<Db>, classifier: &Arc<RoleClassifier>, token: &str) {
@@ -147,9 +221,25 @@ async fn weekly_reset_loop(db: &Arc<Db>, classifier: &Arc<RoleClassifier>, token
 
         // ── Assign roles before archiving (data still in sessions table) ──
         if let Some(gid) = guild_id() {
-            match assign_weekly_roles(db, classifier, &http, gid, summary_channel).await {
-                Ok(count) => println!("[roles] Assigned roles to {count} users"),
-                Err(e) => eprintln!("[roles] Role assignment failed: {e}"),
+            match db.user_activity_breakdown_weekly().await {
+                Ok(user_activities) if !user_activities.is_empty() => {
+                    match assign_weekly_roles(
+                        db,
+                        classifier,
+                        &http,
+                        gid,
+                        summary_channel,
+                        user_activities,
+                        &week_label,
+                    )
+                    .await
+                    {
+                        Ok(count) => println!("[roles] Assigned roles to {count} users"),
+                        Err(e) => eprintln!("[roles] Role assignment failed: {e}"),
+                    }
+                }
+                Ok(_) => println!("[roles] No activity data for role assignment"),
+                Err(e) => eprintln!("[roles] Failed to fetch activity data: {e}"),
             }
         }
 
@@ -253,17 +343,17 @@ fn build_nickname(tier: usize, display_name: &str) -> String {
     }
 }
 
-/// Assign Discord roles based on weekly activity.
-/// 1. Reset all chevron nicknames
-/// 2. Delete old generated roles
-/// 3. Classify each user
-/// 4. Create role + set nickname
+/// Assign Discord roles based on activity data.
+/// Accepts pre-fetched activity data so it can work from either
+/// live sessions OR archived weeks.
 async fn assign_weekly_roles(
     db: &Arc<Db>,
     classifier: &Arc<RoleClassifier>,
     http: &Arc<Http>,
     guild_id: GuildId,
     announce_channel: Option<ChannelId>,
+    user_activities: Vec<db::UserActivityEntry>,
+    week_label: &str,
 ) -> anyhow::Result<usize> {
     // Step 1: Reset nicknames
     match reset_nicknames(http, guild_id).await {
@@ -285,13 +375,7 @@ async fn assign_weekly_roles(
         Err(e) => eprintln!("[roles] Cleanup failed: {e}"),
     }
 
-    // Step 3: Gather activity data
-    let _breakdown = db.activity_breakdown_weekly().await?;
-    let user_activities = db.user_activity_breakdown_weekly().await?;
-
-    let mut count = 0;
-
-    // Group activities by user_id
+    // Step 3: Group activities by user_id
     let mut per_user: std::collections::HashMap<String, Vec<(String, i64)>> =
         std::collections::HashMap::new();
     let mut user_totals: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
@@ -304,6 +388,7 @@ async fn assign_weekly_roles(
         *user_totals.entry(entry.user_id.clone()).or_insert(0) += entry.total_minutes;
     }
 
+    let mut count = 0;
     let mut assignments: Vec<(String, String)> = Vec::new();
 
     let anchor_role_id: RoleId = match std::env::var("ANCHOR_ROLE_ID") {
@@ -398,6 +483,11 @@ async fn assign_weekly_roles(
                 eprintln!("[roles] Failed to create role '{}': {e}", role_name);
             }
         }
+    }
+
+    // Mark this week as done
+    if let Err(e) = db.mark_roles_assigned(week_label).await {
+        eprintln!("[roles] Failed to mark roles assigned: {e}");
     }
 
     // Announce in summary channel
