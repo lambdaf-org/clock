@@ -836,6 +836,115 @@ impl Db {
 
         Ok(activities.into_iter().take(limit).map(|(a, _)| a).collect())
     }
+
+    // ── Archive query methods (for startup role assignment) ─────
+
+    /// Get the most recent archived week label.
+    pub async fn last_archived_week(&self) -> anyhow::Result<Option<String>> {
+        let row = sqlx::query(
+            "SELECT DISTINCT week_label FROM activity_archive ORDER BY week_label DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.get("week_label")))
+    }
+
+    /// Activity breakdown from archive for a specific week.
+    pub async fn activity_breakdown_for_week(
+        &self,
+        week_label: &str,
+    ) -> anyhow::Result<Vec<ActivityEntry>> {
+        let rows = sqlx::query(
+            "SELECT username, activity, total_min as total, 0 as sessions
+             FROM activity_archive
+             WHERE week_label = $1
+             ORDER BY username ASC, total DESC",
+        )
+        .bind(week_label)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| ActivityEntry {
+                username: r.get("username"),
+                activity: r.get("activity"),
+                total_minutes: r.get("total"),
+                session_count: r.get("sessions"),
+            })
+            .collect())
+    }
+
+    /// Per-user activity breakdown from archive for a specific week.
+    pub async fn user_activity_breakdown_for_week(
+        &self,
+        week_label: &str,
+    ) -> anyhow::Result<Vec<UserActivityEntry>> {
+        let rows = sqlx::query(
+            "SELECT user_id, username, activity, total_min as total
+             FROM activity_archive
+             WHERE week_label = $1
+             ORDER BY user_id ASC, total DESC",
+        )
+        .bind(week_label)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| UserActivityEntry {
+                user_id: r.get("user_id"),
+                username: r.get("username"),
+                activity: r.get("activity"),
+                total_minutes: r.get("total"),
+            })
+            .collect())
+    }
+
+    /// Total minutes per user from archive for a specific week.
+    pub async fn user_totals_for_week(
+        &self,
+        week_label: &str,
+    ) -> anyhow::Result<Vec<(String, i64)>> {
+        let rows = sqlx::query(
+            "SELECT user_id, SUM(total_min) as total
+             FROM activity_archive
+             WHERE week_label = $1
+             GROUP BY user_id",
+        )
+        .bind(week_label)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("user_id"), r.get("total")))
+            .collect())
+    }
+
+    /// Check if roles were already assigned for a given week.
+    pub async fn roles_assigned_for_week(&self, week_label: &str) -> anyhow::Result<bool> {
+        let key = format!("roles_assigned_{}", week_label);
+        let row = sqlx::query("SELECT value FROM metadata WHERE key = $1")
+            .bind(&key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row
+            .map(|r| r.get::<String, _>("value") == "true")
+            .unwrap_or(false))
+    }
+
+    /// Mark roles as assigned for a given week.
+    pub async fn mark_roles_assigned(&self, week_label: &str) -> anyhow::Result<()> {
+        let key = format!("roles_assigned_{}", week_label);
+        sqlx::query("DELETE FROM metadata WHERE key = $1")
+            .bind(&key)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("INSERT INTO metadata (key, value) VALUES ($1, $2)")
+            .bind(&key)
+            .bind("true")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
