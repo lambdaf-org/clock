@@ -1,0 +1,750 @@
+use candle_core::{Device, Tensor};
+use candle_nn::VarBuilder;
+use candle_transformers::models::bert::{BertModel, Config, DTYPE, HiddenAct};
+use hf_hub::{Repo, RepoType, api::sync::Api};
+use std::collections::HashMap;
+use tokenizers::Tokenizer;
+
+const MODEL_ID: &str = "sentence-transformers/all-MiniLM-L6-v2";
+const REVISION: &str = "refs/pr/21";
+
+const TIER_THRESHOLDS: [(usize, i64); 6] = [
+    (1, 0),
+    (2, 1200),
+    (3, 2400),
+    (4, 3600),
+    (5, 4500),
+    (6, 5400),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Style {
+    Architect,
+    Visionary,
+    Executor,
+    Analyst,
+    Ghost,
+    Strategist,
+    Maverick,
+}
+
+impl std::fmt::Display for Style {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Style::Architect => write!(f, "architect"),
+            Style::Visionary => write!(f, "visionary"),
+            Style::Executor => write!(f, "executor"),
+            Style::Analyst => write!(f, "analyst"),
+            Style::Ghost => write!(f, "ghost"),
+            Style::Strategist => write!(f, "strategist"),
+            Style::Maverick => write!(f, "maverick"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unicode font mapping
+// ---------------------------------------------------------------------------
+
+fn to_math_italic(c: char) -> char {
+    match c {
+        'A'..='Z' => char::from_u32(0x1D434 + (c as u32 - 'A' as u32)).unwrap_or(c),
+        'a'..='z' => {
+            if c == 'h' {
+                '\u{210E}'
+            } else {
+                char::from_u32(0x1D44E + (c as u32 - 'a' as u32)).unwrap_or(c)
+            }
+        }
+        _ => c,
+    }
+}
+
+fn to_math_bold(c: char) -> char {
+    match c {
+        'A'..='Z' => char::from_u32(0x1D400 + (c as u32 - 'A' as u32)).unwrap_or(c),
+        'a'..='z' => char::from_u32(0x1D41A + (c as u32 - 'a' as u32)).unwrap_or(c),
+        '0'..='9' => char::from_u32(0x1D7CE + (c as u32 - '0' as u32)).unwrap_or(c),
+        _ => c,
+    }
+}
+
+fn to_math_bold_sans(c: char) -> char {
+    match c {
+        'A'..='Z' => char::from_u32(0x1D5D4 + (c as u32 - 'A' as u32)).unwrap_or(c),
+        'a'..='z' => char::from_u32(0x1D5EE + (c as u32 - 'a' as u32)).unwrap_or(c),
+        '0'..='9' => char::from_u32(0x1D7EC + (c as u32 - '0' as u32)).unwrap_or(c),
+        _ => c,
+    }
+}
+
+fn to_fraktur(c: char) -> char {
+    match c {
+        'C' => '\u{212D}',
+        'H' => '\u{210C}',
+        'I' => '\u{2111}',
+        'R' => '\u{211C}',
+        'Z' => '\u{2128}',
+        'A' | 'B' | 'D'..='G' | 'J'..='Q' | 'S'..='Y' => {
+            char::from_u32(0x1D504 + (c as u32 - 'A' as u32)).unwrap_or(c)
+        }
+        'a'..='z' => char::from_u32(0x1D51E + (c as u32 - 'a' as u32)).unwrap_or(c),
+        _ => c,
+    }
+}
+
+fn apply_font(text: &str, mapper: fn(char) -> char) -> String {
+    text.chars().map(mapper).collect()
+}
+
+/// Tier 1-2: plain ASCII
+/// Tier 3:   math italic
+/// Tier 4:   bold serif
+/// Tier 5:   bold sans-serif
+/// Tier 6:   fraktur
+fn style_text(text: &str, tier: usize) -> String {
+    match tier {
+        1 | 2 => text.to_string(),
+        3 => apply_font(text, to_math_italic),
+        4 => apply_font(text, to_math_bold),
+        5 => apply_font(text, to_math_bold_sans),
+        6 => apply_font(text, to_fraktur),
+        _ => text.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Formatting
+// ---------------------------------------------------------------------------
+
+/// Tier 1: no chevrons, no brackets (naked)
+/// Tier 2-6: 〔⟫×(tier-1)〕
+pub fn format_role(tier: usize, word: &str) -> String {
+    let styled = style_text(word, tier);
+    if tier <= 1 {
+        styled
+    } else {
+        let chevrons = "⟫".repeat(tier - 1);
+        format!("〔{}〕{}", chevrons, styled)
+    }
+}
+
+pub fn minutes_to_tier(minutes: i64) -> usize {
+    let mut tier = 1;
+    for &(t, threshold) in &TIER_THRESHOLDS {
+        if minutes >= threshold {
+            tier = t;
+        }
+    }
+    tier
+}
+
+// ---------------------------------------------------------------------------
+// Style descriptions
+// ---------------------------------------------------------------------------
+
+fn style_descriptions() -> Vec<(Style, &'static str)> {
+    vec![
+        (
+            Style::Architect,
+            "A person who builds engines, bots, tools, platforms, provisioning systems, \
+            collaboration tools, access management, real-time systems, database work, server code, \
+            automation scripts, integration code, developer tooling, infrastructure code",
+        ),
+        (
+            Style::Visionary,
+            "A person who creates landing pages, designs products, builds brands, \
+            launches new things, makes prototypes, builds user-facing applications, \
+            grade management tools, visual dashboards, presentation materials",
+        ),
+        (
+            Style::Executor,
+            "A person who does physical manual labor, carries boxes, cleans floors, \
+            washes dishes, mows lawns, paints walls, moves furniture, digs holes, \
+            lifts heavy objects, sweeps, mops, scrubs, hauls trash, stacks shelves",
+        ),
+        (
+            Style::Analyst,
+            "A person who does research, studies neuroscience, cognitive science, \
+            analyzes benchmarks, writes academic papers, diploma thesis, university coursework, \
+            runs experiments, collects measurements, reads scientific papers",
+        ),
+        (
+            Style::Ghost,
+            "A person who works silently in the background, fixes bugs nobody notices, \
+            maintains old code, does cleanup, handles invisible maintenance, \
+            runs background scripts, monitors systems quietly",
+        ),
+        (
+            Style::Strategist,
+            "A person who plans projects, coordinates teams, manages roadmaps, \
+            organizes schedules, delegates tasks, writes project plans, \
+            tracks milestones, manages stakeholders, prioritizes tasks",
+        ),
+        (
+            Style::Maverick,
+            "A person who experiments with side projects, builds random things for fun, \
+            explores new technologies, creates games, physics engines, visualizers, \
+            hacks on hobby projects, tries new things, builds something unusual",
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Word pool
+// ---------------------------------------------------------------------------
+
+fn word_pool() -> HashMap<(Style, usize), Vec<&'static str>> {
+    let mut pool = HashMap::new();
+
+    pool.insert(
+        (Style::Architect, 1),
+        vec!["Sketcher", "Planner", "Draftsman", "Mapper", "Framer"],
+    );
+    pool.insert(
+        (Style::Architect, 2),
+        vec![
+            "Builder",
+            "Structurer",
+            "Engineer",
+            "Contractor",
+            "Designer",
+        ],
+    );
+    pool.insert(
+        (Style::Architect, 3),
+        vec!["Warden", "Steward", "Overseer", "Director", "Commander"],
+    );
+    pool.insert(
+        (Style::Architect, 4),
+        vec!["Rampart", "Bastion", "Pillar", "Fortress", "Ironclad"],
+    );
+    pool.insert(
+        (Style::Architect, 5),
+        vec![
+            "Keystone",
+            "Cornerstone",
+            "Architect",
+            "Sovereign",
+            "Monument",
+        ],
+    );
+    pool.insert(
+        (Style::Architect, 6),
+        vec!["Bedrock", "Foundation", "Monolith", "Colossus", "Obelisk"],
+    );
+
+    pool.insert(
+        (Style::Visionary, 1),
+        vec!["Spark", "Dreamer", "Seeker", "Wanderer", "Explorer"],
+    );
+    pool.insert(
+        (Style::Visionary, 2),
+        vec![
+            "Torchbearer",
+            "Pathfinder",
+            "Trailblazer",
+            "Pioneer",
+            "Vanguard",
+        ],
+    );
+    pool.insert(
+        (Style::Visionary, 3),
+        vec!["Herald", "Beacon", "Firebrand", "Luminary", "Prophet"],
+    );
+    pool.insert(
+        (Style::Visionary, 4),
+        vec![
+            "Catalyst",
+            "Tempest",
+            "Iconoclast",
+            "Firestarter",
+            "Harbinger",
+        ],
+    );
+    pool.insert(
+        (Style::Visionary, 5),
+        vec!["Seer", "Mystic", "Visionary", "Phenomenon", "Revelation"],
+    );
+    pool.insert(
+        (Style::Visionary, 6),
+        vec![
+            "Supernova",
+            "Singularity",
+            "Event Horizon",
+            "Big Bang",
+            "Legend",
+        ],
+    );
+
+    pool.insert(
+        (Style::Executor, 1),
+        vec!["Grunt", "Soldier", "Worker", "Grinder", "Hustler"],
+    );
+    pool.insert(
+        (Style::Executor, 2),
+        vec!["Mule", "Bulldog", "Workhorse", "Ironside", "Tank"],
+    );
+    pool.insert(
+        (Style::Executor, 3),
+        vec![
+            "Enforcer",
+            "Crusher",
+            "Berserker",
+            "Steamroller",
+            "Juggernaut",
+        ],
+    );
+    pool.insert(
+        (Style::Executor, 4),
+        vec![
+            "Demolisher",
+            "Ravager",
+            "Destroyer",
+            "Obliterator",
+            "Annihilator",
+        ],
+    );
+    pool.insert(
+        (Style::Executor, 5),
+        vec!["Goliath", "Mammoth", "Titan", "Behemoth", "Leviathan"],
+    );
+    pool.insert(
+        (Style::Executor, 6),
+        vec![
+            "Cataclysm",
+            "Apocalypse",
+            "Extinction",
+            "Armageddon",
+            "Ragnarok",
+        ],
+    );
+
+    pool.insert(
+        (Style::Analyst, 1),
+        vec!["Novice", "Listener", "Student", "Watcher", "Observer"],
+    );
+    pool.insert(
+        (Style::Analyst, 2),
+        vec![
+            "Auditor",
+            "Examiner",
+            "Researcher",
+            "Investigator",
+            "Scholar",
+        ],
+    );
+    pool.insert(
+        (Style::Analyst, 3),
+        vec![
+            "Decoder",
+            "Analyst",
+            "Diagnostician",
+            "Strategist",
+            "Cryptographer",
+        ],
+    );
+    pool.insert(
+        (Style::Analyst, 4),
+        vec!["Prodigy", "Savant", "Virtuoso", "Polymath", "Mastermind"],
+    );
+    pool.insert(
+        (Style::Analyst, 5),
+        vec![
+            "Chronicler",
+            "Sage",
+            "Clairvoyant",
+            "All-Seer",
+            "Omniscient",
+        ],
+    );
+    pool.insert(
+        (Style::Analyst, 6),
+        vec![
+            "Black Box",
+            "Zero Error",
+            "Doomreader",
+            "Absolute",
+            "Final Answer",
+        ],
+    );
+
+    pool.insert(
+        (Style::Ghost, 1),
+        vec!["Drift", "Murmur", "Whisper", "Shade", "Shadow"],
+    );
+    pool.insert(
+        (Style::Ghost, 2),
+        vec!["Silhouette", "Ghost", "Specter", "Phantom", "Wraith"],
+    );
+    pool.insert(
+        (Style::Ghost, 3),
+        vec![
+            "Haunt",
+            "Nightcrawler",
+            "Apparition",
+            "Poltergeist",
+            "Revenant",
+        ],
+    );
+    pool.insert(
+        (Style::Ghost, 4),
+        vec!["Mirage", "Enigma", "Cipher", "Null", "Void"],
+    );
+    pool.insert(
+        (Style::Ghost, 5),
+        vec!["Limbo", "Eclipse", "Nether", "Abyss", "Oblivion"],
+    );
+    pool.insert(
+        (Style::Ghost, 6),
+        vec!["Erased", "Forgotten", "Nameless", "Nonexistent", "Nothing"],
+    );
+
+    pool.insert(
+        (Style::Strategist, 1),
+        vec!["Spotter", "Lookout", "Watchman", "Sentinel", "Guard"],
+    );
+    pool.insert(
+        (Style::Strategist, 2),
+        vec!["Operator", "Handler", "Plotter", "Schemer", "Tactician"],
+    );
+    pool.insert(
+        (Style::Strategist, 3),
+        vec!["Marshal", "Warlord", "General", "Chancellor", "Kingmaker"],
+    );
+    pool.insert(
+        (Style::Strategist, 4),
+        vec!["Regent", "Dictator", "Tyrant", "Overlord", "Emperor"],
+    );
+    pool.insert(
+        (Style::Strategist, 5),
+        vec![
+            "Phantom King",
+            "Eminence",
+            "Grandmaster",
+            "Chessmaster",
+            "Puppetmaster",
+        ],
+    );
+    pool.insert(
+        (Style::Strategist, 6),
+        vec!["Endgame", "Omega", "Unkillable", "Inevitable", "Checkmate"],
+    );
+
+    pool.insert(
+        (Style::Maverick, 1),
+        vec!["Stray", "Rookie", "Drifter", "Wildcard", "Rebel"],
+    );
+    pool.insert(
+        (Style::Maverick, 2),
+        vec!["Rogue", "Bandit", "Outlaw", "Maverick", "Renegade"],
+    );
+    pool.insert(
+        (Style::Maverick, 3),
+        vec![
+            "Gunslinger",
+            "Corsair",
+            "Vigilante",
+            "Mercenary",
+            "Desperado",
+        ],
+    );
+    pool.insert(
+        (Style::Maverick, 4),
+        vec!["Exile", "Heretic", "Usurper", "Kingslayer", "Pirate King"],
+    );
+    pool.insert(
+        (Style::Maverick, 5),
+        vec!["Outcast", "Boogeyman", "Nightmare", "Folklore", "Myth"],
+    );
+    pool.insert(
+        (Style::Maverick, 6),
+        vec![
+            "Unbound",
+            "Unchained",
+            "Impossible",
+            "Untouchable",
+            "Anomaly",
+        ],
+    );
+
+    pool
+}
+
+// ---------------------------------------------------------------------------
+// Embedding / similarity
+// ---------------------------------------------------------------------------
+
+fn normalize_l2(v: &[f32]) -> Vec<f32> {
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm == 0.0 {
+        return v.to_vec();
+    }
+    v.iter().map(|x| x / norm).collect()
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+// ---------------------------------------------------------------------------
+// Classifier
+// ---------------------------------------------------------------------------
+
+pub struct RoleClassifier {
+    model: BertModel,
+    tokenizer: Tokenizer,
+    device: Device,
+    style_embeddings: Vec<StyleEmbedding>,
+}
+
+pub struct StyleEmbedding {
+    style: Style,
+    embedding: Vec<f32>,
+}
+
+impl RoleClassifier {
+    pub fn new() -> anyhow::Result<Self> {
+        println!("[roles] Downloading model...");
+        let api = Api::new()?;
+        let repo = api.repo(Repo::with_revision(
+            MODEL_ID.to_string(),
+            RepoType::Model,
+            REVISION.to_string(),
+        ));
+
+        let config_path = repo.get("config.json")?;
+        let tokenizer_path = repo.get("tokenizer.json")?;
+        let weights_path = repo.get("model.safetensors")?;
+
+        println!("[roles] Loading model...");
+        let device = Device::Cpu;
+
+        let config_str = std::fs::read_to_string(&config_path)?;
+        let mut config: Config = serde_json::from_str(&config_str)?;
+        config.hidden_act = HiddenAct::Gelu;
+
+        let tokenizer = Tokenizer::from_file(&tokenizer_path)
+            .map_err(|e| anyhow::anyhow!("tokenizer error: {}", e))?;
+
+        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], DTYPE, &device)? };
+        let model = BertModel::load(vb, &config)?;
+
+        let mut classifier = Self {
+            model,
+            tokenizer,
+            device,
+            style_embeddings: Vec::new(),
+        };
+
+        println!("[roles] Embedding style descriptions...");
+        for (style, desc) in style_descriptions() {
+            let embedding = classifier.embed(desc)?;
+            classifier
+                .style_embeddings
+                .push(StyleEmbedding { style, embedding });
+        }
+
+        println!(
+            "[roles] Ready. {} styles embedded.",
+            classifier.style_embeddings.len()
+        );
+
+        Ok(classifier)
+    }
+
+    fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        let encoding = self
+            .tokenizer
+            .encode(text, true)
+            .map_err(|e| anyhow::anyhow!("tokenize error: {}", e))?;
+
+        let ids = encoding.get_ids().to_vec();
+        let type_ids = encoding.get_type_ids().to_vec();
+
+        let token_ids = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?;
+        let token_type_ids = Tensor::new(type_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+
+        let output = self.model.forward(&token_ids, &token_type_ids, None)?;
+
+        let (_n_sentence, n_tokens, _hidden_size) = output.dims3()?;
+        let mean = (output.sum(1)? / (n_tokens as f64))?;
+
+        let raw: Vec<f32> = mean.squeeze(0)?.to_vec1()?;
+        Ok(normalize_l2(&raw))
+    }
+
+    pub fn classify(
+        &self,
+        activities: &[(String, i64)],
+        total_minutes: i64,
+    ) -> anyhow::Result<(String, String, usize)> {
+        let tier = minutes_to_tier(total_minutes);
+
+        let mut style_scores: HashMap<Style, f32> = HashMap::new();
+        let mut total_weight = 0i64;
+
+        for (activity, minutes) in activities {
+            if activity == "work" {
+                continue;
+            }
+
+            let mut clean = activity.replace('-', " ");
+            clean = clean.replace("work", "").trim().to_string();
+
+            while clean.contains("  ") {
+                clean = clean.replace("  ", " ");
+            }
+
+            if clean.is_empty() {
+                continue;
+            }
+
+            println!("[roles]   activity: '{}' ({}min)", clean, minutes);
+
+            let activity_emb = self.embed(&clean)?;
+
+            for se in &self.style_embeddings {
+                let sim = cosine_similarity(&activity_emb, &se.embedding);
+                *style_scores.entry(se.style).or_insert(0.0) += sim * (*minutes as f32);
+            }
+
+            total_weight += minutes;
+        }
+
+        if total_weight == 0 {
+            let pool = word_pool();
+            let words = pool
+                .get(&(Style::Executor, tier))
+                .map(|v| v.as_slice())
+                .unwrap_or(&["Unknown"]);
+
+            let idx = (total_minutes as usize) % words.len();
+            let word = words[idx];
+            let role = format_role(tier, word);
+
+            println!("[roles] No signal, defaulting to executor → {}", role);
+            return Ok((role, word.to_string(), tier));
+        }
+
+        for score in style_scores.values_mut() {
+            *score /= total_weight as f32;
+        }
+
+        let mut sorted: Vec<(Style, f32)> = style_scores.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        println!("[roles] Tier {} style scores:", tier);
+        for (style, score) in &sorted {
+            println!("[roles]   {:.4} {}", score, style);
+        }
+
+        let winning_style = sorted.first().map(|(s, _)| *s).unwrap_or(Style::Executor);
+
+        let pool = word_pool();
+        let words = pool
+            .get(&(winning_style, tier))
+            .map(|v| v.as_slice())
+            .unwrap_or(&["Unknown"]);
+
+        let tier_starts: [i64; 7] = [0, 0, 1200, 2400, 3600, 4500, 5400];
+        let tier_ends: [i64; 7] = [0, 1200, 2400, 3600, 4500, 5400, 7200];
+        let start = tier_starts[tier];
+        let end = tier_ends[tier];
+        let range = (end - start).max(1);
+        let position = ((total_minutes - start) as f64) / (range as f64);
+        let idx = ((position * words.len() as f64) as usize).min(words.len() - 1);
+        let word = words[idx];
+
+        let role = format_role(tier, word);
+        println!("[roles] Winner: {} → {}", winning_style, role);
+
+        Ok((role, word.to_string(), tier))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_minutes_to_tier() {
+        assert_eq!(minutes_to_tier(0), 1);
+        assert_eq!(minutes_to_tier(1200), 2);
+        assert_eq!(minutes_to_tier(2940), 3);
+        assert_eq!(minutes_to_tier(3600), 4);
+        assert_eq!(minutes_to_tier(5400), 6);
+    }
+
+    #[test]
+    fn test_format_role_tier1_naked() {
+        // Tier 1: no brackets, no chevrons, plain text
+        assert_eq!(format_role(1, "Spark"), "Spark");
+        assert_eq!(format_role(1, "Shadow"), "Shadow");
+    }
+
+    #[test]
+    fn test_format_role_tier2_plain() {
+        // Tier 2: one chevron, plain text
+        assert_eq!(format_role(2, "Workhorse"), "〔⟫〕Workhorse");
+    }
+
+    #[test]
+    fn test_format_role_tier3_italic() {
+        let role = format_role(3, "Apparition");
+        assert!(role.starts_with("〔⟫⟫〕"));
+        assert!(!role.contains("Apparition")); // should be italic unicode
+    }
+
+    #[test]
+    fn test_format_role_tier4_bold() {
+        let role = format_role(4, "Fortress");
+        assert!(role.starts_with("〔⟫⟫⟫〕"));
+        assert!(!role.contains("Fortress")); // should be bold unicode
+    }
+
+    #[test]
+    fn test_format_role_tier5_bold_sans() {
+        let role = format_role(5, "Chessmaster");
+        assert!(role.starts_with("〔⟫⟫⟫⟫〕"));
+        assert!(!role.contains("Chessmaster")); // should be bold sans unicode
+    }
+
+    #[test]
+    fn test_format_role_tier6_fraktur() {
+        let role = format_role(6, "Nothing");
+        assert!(role.starts_with("〔⟫⟫⟫⟫⟫〕"));
+        assert!(!role.contains("Nothing")); // should be fraktur unicode
+    }
+
+    #[test]
+    fn test_chevron_counts() {
+        // Tier 1: no brackets at all
+        assert!(!format_role(1, "X").contains('〔'));
+        // Tier 2: 1 chevron
+        assert!(format_role(2, "X").contains("〔⟫〕"));
+        // Tier 6: 5 chevrons
+        assert!(format_role(6, "X").contains("〔⟫⟫⟫⟫⟫〕"));
+    }
+
+    #[test]
+    fn test_style_text_plain() {
+        assert_eq!(style_text("Hello", 1), "Hello");
+        assert_eq!(style_text("Hello", 2), "Hello");
+    }
+
+    #[test]
+    fn test_style_text_preserves_spaces() {
+        let result = style_text("Big Bang", 3);
+        assert!(result.contains(' '));
+    }
+
+    #[test]
+    fn test_word_pool_counts() {
+        let pool = word_pool();
+        assert_eq!(pool.len(), 42);
+        for (_, words) in &pool {
+            assert_eq!(words.len(), 5);
+        }
+    }
+}
