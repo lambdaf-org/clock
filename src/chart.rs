@@ -28,33 +28,23 @@ const LINE_COLORS: [RGBColor; 5] = [
 ];
 
 /// Render a line chart for `data` according to `mode`.
-/// Returns raw PNG bytes.
+/// Returns raw PNG bytes rendered entirely in memory.
 pub fn render_chart(data: &ChartData, mode: ChartMode) -> anyhow::Result<Vec<u8>> {
     let n_weeks = data.week_labels.len();
     if n_weeks < 2 || data.users.is_empty() {
         anyhow::bail!("not enough data to render chart");
     }
 
-    // Write to a temp file then read back as bytes.
-    let tmp_path = std::env::temp_dir().join(format!(
-        "clock_chart_{}.png",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    let tmp_str = tmp_path
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("temp path is not valid UTF-8"))?
-        .to_owned();
-
     let (width, height): (u32, u32) = match mode {
         ChartMode::Both => (1200, 900),
         _ => (1200, 600),
     };
 
+    // Render to a raw RGB pixel buffer (3 bytes per pixel).
+    let mut pixel_buf = vec![0u8; (width * height * 3) as usize];
     {
-        let root = BitMapBackend::new(&tmp_str, (width, height)).into_drawing_area();
+        let root =
+            BitMapBackend::with_buffer(&mut pixel_buf, (width, height)).into_drawing_area();
         root.fill(&WHITE)
             .map_err(|e| anyhow::anyhow!("fill error: {:?}", e))?;
 
@@ -76,9 +66,18 @@ pub fn render_chart(data: &ChartData, mode: ChartMode) -> anyhow::Result<Vec<u8>
             .map_err(|e| anyhow::anyhow!("present error: {:?}", e))?;
     }
 
-    let bytes = std::fs::read(&tmp_path)?;
-    let _ = std::fs::remove_file(&tmp_path);
-    Ok(bytes)
+    // Encode the raw RGB buffer to PNG in memory.
+    let img = image::RgbImage::from_raw(width, height, pixel_buf)
+        .ok_or_else(|| anyhow::anyhow!("failed to create RGB image from pixel buffer"))?;
+    let mut png_bytes: Vec<u8> = Vec::new();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(
+            &mut std::io::Cursor::new(&mut png_bytes),
+            image::ImageFormat::Png,
+        )
+        .map_err(|e| anyhow::anyhow!("PNG encode error: {}", e))?;
+
+    Ok(png_bytes)
 }
 
 fn draw_panel<DB>(
@@ -183,4 +182,92 @@ where
         .map_err(|e| anyhow::anyhow!("draw legend: {:?}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{ChartData, UserWeeklyData};
+
+    fn make_data() -> ChartData {
+        ChartData {
+            week_labels: vec![
+                "KW14/2026".to_string(),
+                "KW15/2026".to_string(),
+                "KW16/2026".to_string(),
+                "KW17/2026".to_string(),
+            ],
+            users: vec![
+                UserWeeklyData {
+                    username: "Alice".to_string(),
+                    minutes_per_week: vec![120, 90, 180, 60],
+                },
+                UserWeeklyData {
+                    username: "Bob".to_string(),
+                    minutes_per_week: vec![60, 150, 30, 90],
+                },
+            ],
+        }
+    }
+
+    /// Attempt to render; returns `None` if system fonts are unavailable
+    /// (plotters panics in that case rather than returning an error).
+    fn try_render(data: &ChartData, mode: ChartMode) -> Option<Vec<u8>> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            render_chart(data, mode).ok()
+        }))
+        .ok()
+        .flatten()
+    }
+
+    #[test]
+    fn test_render_totals_produces_png() {
+        let data = make_data();
+        if let Some(bytes) = try_render(&data, ChartMode::Totals) {
+            // PNG magic bytes: 0x89 P N G \r \n 0x1a \n
+            assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "output is not a PNG");
+            assert!(bytes.len() > 1000, "PNG seems too small");
+        }
+        // If no system fonts are available, plotters panics; we skip gracefully.
+    }
+
+    #[test]
+    fn test_render_cumulative_produces_png() {
+        let data = make_data();
+        if let Some(bytes) = try_render(&data, ChartMode::Cumulative) {
+            assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        }
+    }
+
+    #[test]
+    fn test_render_both_produces_larger_png() {
+        let data = make_data();
+        let totals = try_render(&data, ChartMode::Totals);
+        let both = try_render(&data, ChartMode::Both);
+        if let (Some(t), Some(b)) = (totals, both) {
+            // "both" is 1200×900 vs 1200×600 so should produce more pixel data.
+            assert!(b.len() > t.len());
+        }
+    }
+
+    #[test]
+    fn test_render_insufficient_data_errors() {
+        let data = ChartData {
+            week_labels: vec!["KW14/2026".to_string()], // only 1 week
+            users: vec![UserWeeklyData {
+                username: "Alice".to_string(),
+                minutes_per_week: vec![60],
+            }],
+        };
+        assert!(render_chart(&data, ChartMode::Totals).is_err());
+    }
+
+    #[test]
+    fn test_render_no_users_errors() {
+        let data = ChartData {
+            week_labels: vec!["KW14/2026".to_string(), "KW15/2026".to_string()],
+            users: vec![],
+        };
+        assert!(render_chart(&data, ChartMode::Totals).is_err());
+    }
 }

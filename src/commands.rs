@@ -24,6 +24,7 @@ const COLOR_ORANGE: u32 = 0xe67e22;
 const BAR_FULL: &str = "█";
 const BAR_EMPTY: &str = "░";
 const BAR_WIDTH: usize = 16;
+const CHART_MEDALS: [&str; 5] = ["🥇", "🥈", "🥉", "▫️", "▫️"];
 
 pub async fn handle_command(ctx: &Context, msg: &Message, db: &Arc<Db>) {
     if !msg.content.starts_with("/clock") {
@@ -619,10 +620,9 @@ async fn handle_chart(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
     let mut user_summary = String::new();
     for (i, user) in data.users.iter().enumerate() {
         let total_min: i64 = user.minutes_per_week.iter().sum();
-        let medals = ["🥇", "🥈", "🥉", "▫️", "▫️"];
         user_summary += &format!(
             "{} **{}** — {}\n",
-            medals[i],
+            CHART_MEDALS[i],
             user.username,
             format_duration(total_min)
         );
