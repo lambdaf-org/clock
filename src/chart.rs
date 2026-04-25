@@ -18,14 +18,46 @@ impl ChartMode {
     }
 }
 
-/// Five distinct colors for the up-to-five user lines.
-const LINE_COLORS: [RGBColor; 5] = [
-    RGBColor(0x58, 0x65, 0xF2), // Discord blurple
-    RGBColor(0x2E, 0xCC, 0x71), // Emerald green
-    RGBColor(0xE7, 0x4C, 0x3C), // Alizarin red
-    RGBColor(0xF1, 0xC4, 0x0F), // Sunflower yellow
-    RGBColor(0x9B, 0x59, 0xB6), // Amethyst purple
+// Discord-dark friendly theme
+const BG: RGBColor = RGBColor(0x1e, 0x1f, 0x22); // panel background
+const FG: RGBColor = RGBColor(0xea, 0xec, 0xee); // primary text
+const MUTED: RGBColor = RGBColor(0x9a, 0xa0, 0xa6); // axis text / subtitle
+const GRID: RGBColor = RGBColor(0x2f, 0x33, 0x39); // gridlines / axis line
+
+// Tableau-10-ish, high contrast on dark, color-blind friendlier than the old palette
+const PALETTE: [RGBColor; 5] = [
+    RGBColor(0x4C, 0x9A, 0xFF), // blue
+    RGBColor(0xF5, 0x85, 0x18), // orange
+    RGBColor(0x54, 0xA2, 0x4B), // green
+    RGBColor(0xE4, 0x57, 0x56), // red
+    RGBColor(0x72, 0xB7, 0xB2), // teal
 ];
+
+/// Round `v` up to a "nice" number from a fixed sequence.
+fn nice_ceiling(v: f64) -> f64 {
+    const STEPS: &[f64] = &[
+        5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 75.0, 100.0, 150.0, 200.0, 300.0, 500.0,
+        1000.0, 1500.0, 2000.0, 3000.0, 5000.0,
+    ];
+    for &s in STEPS {
+        if v <= s {
+            return s;
+        }
+    }
+    // fall back to next power-of-10 multiple
+    let mag = 10f64.powf(v.log10().floor());
+    (v / mag).ceil() * mag
+}
+
+/// Shorten week labels for display: `"KW14/2026"` → `"W14"`, others unchanged.
+fn short_week_label(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix("KW") {
+        if let Some((num, _year)) = rest.split_once('/') {
+            return format!("W{}", num);
+        }
+    }
+    s.to_string()
+}
 
 /// Render a line chart for `data` according to `mode`.
 /// Returns raw PNG bytes rendered entirely in memory.
@@ -45,7 +77,7 @@ pub fn render_chart(data: &ChartData, mode: ChartMode) -> anyhow::Result<Vec<u8>
     {
         let root =
             BitMapBackend::with_buffer(&mut pixel_buf, (width, height)).into_drawing_area();
-        root.fill(&WHITE)
+        root.fill(&BG)
             .map_err(|e| anyhow::anyhow!("fill error: {:?}", e))?;
 
         match mode {
@@ -93,7 +125,7 @@ where
     let n_weeks = data.week_labels.len();
 
     // Compute the y-axis maximum.
-    let y_max: f64 = if cumulative {
+    let raw_max: f64 = if cumulative {
         data.users
             .iter()
             .map(|u| u.minutes_per_week.iter().map(|&m| m as f64 / 60.0).sum::<f64>())
@@ -105,39 +137,45 @@ where
             .map(|&m| m as f64 / 60.0)
             .fold(0.0_f64, f64::max)
     };
-    let y_max = (y_max * 1.15).max(1.0).ceil();
+    let y_max = nice_ceiling(raw_max * 1.05).max(1.0);
 
     let x_max = (n_weeks - 1) as i32;
 
-    // Decide how many X tick labels to show (avoid crowding).
-    let label_count = if n_weeks <= 12 { n_weeks } else { 6 };
+    // Show at most 8 X tick labels.
+    let label_count = n_weeks.min(8);
 
     let mut chart = ChartBuilder::on(area)
-        .caption(title, ("sans-serif", 18).into_font())
-        .margin(15)
-        .x_label_area_size(50)
-        .y_label_area_size(55)
+        .caption(title, ("sans-serif", 24).into_font().color(&FG))
+        .margin(25)
+        .x_label_area_size(42)
+        .y_label_area_size(52)
         .build_cartesian_2d(0i32..x_max, 0.0f64..y_max)
         .map_err(|e| anyhow::anyhow!("build chart: {:?}", e))?;
 
     let week_labels = &data.week_labels;
     chart
         .configure_mesh()
+        .disable_x_mesh()
+        .light_line_style(GRID)
+        .bold_line_style(GRID)
+        .axis_style(GRID)
         .x_labels(label_count)
+        .x_label_style(("sans-serif", 11).into_font().color(&MUTED))
         .x_label_formatter(&|x| {
             week_labels
                 .get(*x as usize)
-                .map(|s| s.as_str())
-                .unwrap_or("")
-                .to_owned()
+                .map(|s| short_week_label(s))
+                .unwrap_or_default()
         })
         .y_desc("Hours")
+        .axis_desc_style(("sans-serif", 12).into_font().color(&MUTED))
+        .y_label_style(("sans-serif", 11).into_font().color(&MUTED))
         .y_label_formatter(&|y| format!("{:.0}h", y))
         .draw()
         .map_err(|e| anyhow::anyhow!("configure mesh: {:?}", e))?;
 
     for (i, user) in data.users.iter().enumerate() {
-        let color = LINE_COLORS[i % LINE_COLORS.len()];
+        let color = PALETTE[i % PALETTE.len()];
 
         // Build (x, y) data points.
         let points: Vec<(i32, f64)> = if cumulative {
@@ -158,26 +196,42 @@ where
                 .collect()
         };
 
+        // For cumulative mode, draw a translucent area fill under the line.
+        if cumulative {
+            let mut area_pts: Vec<(i32, f64)> = points.clone();
+            // Close the polygon along the baseline.
+            if let (Some(&(last_x, _)), Some(&(first_x, _))) = (points.last(), points.first()) {
+                area_pts.push((last_x, 0.0));
+                area_pts.push((first_x, 0.0));
+            }
+            chart
+                .draw_series(std::iter::once(Polygon::new(area_pts, color.mix(0.10).filled())))
+                .map_err(|e| anyhow::anyhow!("draw area: {:?}", e))?;
+        }
+
         let username = user.username.clone();
         chart
-            .draw_series(LineSeries::new(points.clone(), color.stroke_width(2)))
+            .draw_series(LineSeries::new(points.clone(), color.stroke_width(4)))
             .map_err(|e| anyhow::anyhow!("draw line: {:?}", e))?
             .label(username)
             .legend(move |(lx, ly)| {
-                PathElement::new(vec![(lx, ly), (lx + 20, ly)], color.stroke_width(2))
+                PathElement::new(vec![(lx, ly), (lx + 20, ly)], color.stroke_width(4))
             });
 
-        // Draw dot markers at each data point.
-        chart
-            .draw_series(points.iter().map(|&(x, y)| Circle::new((x, y), 4, color.filled())))
-            .map_err(|e| anyhow::anyhow!("draw circles: {:?}", e))?;
+        // Draw a single endpoint dot at the last data point.
+        if let Some(&last_pt) = points.last() {
+            chart
+                .draw_series(std::iter::once(Circle::new(last_pt, 5, color.filled())))
+                .map_err(|e| anyhow::anyhow!("draw endpoint: {:?}", e))?;
+        }
     }
 
     chart
         .configure_series_labels()
-        .background_style(WHITE.mix(0.85))
-        .border_style(BLACK)
-        .position(SeriesLabelPosition::UpperLeft)
+        .background_style(BG.mix(0.85))
+        .border_style(GRID)
+        .label_font(("sans-serif", 12).into_font().color(&FG))
+        .position(SeriesLabelPosition::UpperRight)
         .draw()
         .map_err(|e| anyhow::anyhow!("draw legend: {:?}", e))?;
 
@@ -222,6 +276,20 @@ mod tests {
             // "already registered" errors are fine in parallel tests; ignore them.
             let _ = register_font("sans-serif", style, FONT);
         }
+    }
+
+    #[test]
+    fn test_nice_ceiling() {
+        assert!(nice_ceiling(0.0) >= 1.0);
+        assert_eq!(nice_ceiling(3.2), 5.0);
+        assert_eq!(nice_ceiling(11.0), 15.0);
+        assert_eq!(nice_ceiling(99.0), 100.0);
+    }
+
+    #[test]
+    fn test_short_week_label() {
+        assert_eq!(short_week_label("KW14/2026"), "W14");
+        assert_eq!(short_week_label("foo"), "foo");
     }
 
     #[test]
