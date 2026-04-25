@@ -79,7 +79,7 @@ fn monday_of_current_week() -> String {
 
 /// Generate the last `weeks` ISO week labels (oldest first, newest last),
 /// matching the `KW%V/%G` format used by `swiss_week_label()`.
-fn generate_week_labels(weeks: u32) -> Vec<String> {
+pub(crate) fn generate_week_labels(weeks: u32) -> Vec<String> {
     let now = Utc::now().with_timezone(&Zurich);
     let today = now.date_naive();
     let wd = today.weekday().num_days_from_monday() as i64;
