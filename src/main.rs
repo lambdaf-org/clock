@@ -5,11 +5,14 @@ mod normalize;
 
 use db::Db;
 use dotenv::dotenv;
+use plotters::style::{register_font, FontStyle};
 use serenity::all::*;
 use serenity::async_trait;
 use std::env;
 use std::path::Path;
 use std::sync::Arc;
+
+static EMBEDDED_FONT: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
 
 struct Handler {
     db: Arc<Db>,
@@ -53,6 +56,21 @@ fn summary_channel_id() -> Option<ChannelId> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
+
+    // Register the embedded DejaVuSans font for every style so plotters'
+    // ab_glyph backend can draw text without needing system fonts.
+    // We register the same TTF for all four styles; bold/italic variants will
+    // render as regular weight but will not panic.
+    for style in [
+        FontStyle::Normal,
+        FontStyle::Bold,
+        FontStyle::Italic,
+        FontStyle::Oblique,
+    ] {
+        if let Err(_) = register_font("sans-serif", style, EMBEDDED_FONT) {
+            eprintln!("[clock] Warning: failed to register embedded font for a style");
+        }
+    }
 
     let token = env::var("DISCORD_TOKEN").expect("DISCORD_TOKEN missing");
     let db = Arc::new(Db::open(Path::new("/data/clock.db"))?);
