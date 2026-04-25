@@ -10,6 +10,7 @@ const HELP: &str = r#"**Commands**
 `/clock leaderboard` — weekly + all-time
 `/clock stats` — activity breakdown
 `/clock rename <old> > <new>` — rename + merge activity
+`/clock chart [weeks] [totals|cumulative|both]` — line chart of top 5 weekly hours
 `/clock help`"#;
 
 const COLOR_GREEN: u32 = 0x2ecc71;
@@ -23,6 +24,7 @@ const COLOR_ORANGE: u32 = 0xe67e22;
 const BAR_FULL: &str = "█";
 const BAR_EMPTY: &str = "░";
 const BAR_WIDTH: usize = 16;
+const CHART_MEDALS: [&str; 5] = ["🥇", "🥈", "🥉", "▫️", "▫️"];
 
 pub async fn handle_command(ctx: &Context, msg: &Message, db: &Arc<Db>) {
     if !msg.content.starts_with("/clock") {
@@ -59,6 +61,9 @@ pub async fn handle_command(ctx: &Context, msg: &Message, db: &Arc<Db>) {
     } else if rest.starts_with("rename ") {
         let args = rest.strip_prefix("rename ").unwrap().trim();
         handle_rename(ctx, msg, db, args).await;
+    } else if rest.starts_with("chart") {
+        let args = rest.strip_prefix("chart").unwrap().trim();
+        handle_chart(ctx, msg, db, args).await;
     } else {
         let _ = msg.reply(&ctx.http, HELP).await;
     }
@@ -525,4 +530,120 @@ async fn handle_rename(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
                 .await;
         }
     }
+}
+
+async fn handle_chart(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
+    // Parse optional positional arguments: [weeks] [mode]
+    let mut weeks: u32 = 12;
+    let mut mode_str = "totals";
+
+    for token in args.split_whitespace() {
+        if let Ok(n) = token.parse::<u32>() {
+            if (1..=52).contains(&n) {
+                weeks = n;
+            }
+        } else if matches!(token, "totals" | "cumulative" | "both") {
+            mode_str = token;
+        }
+    }
+
+    let mode = crate::chart::ChartMode::from_str(mode_str);
+
+    // Typing indicator while we render.
+    let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
+
+    let data = match db.weekly_hours_for_chart(weeks) {
+        Ok(d) => d,
+        Err(e) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_GRAY)
+                .title("📊 Chart Error")
+                .description(format!("{}", e))
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+            return;
+        }
+    };
+
+    if data.users.is_empty() {
+        let embed = CreateEmbed::new()
+            .color(COLOR_GRAY)
+            .title("📊 Not Enough Data")
+            .description(format!(
+                "No time entries found in the last {} week(s).",
+                weeks
+            ))
+            .footer(CreateEmbedFooter::new(swiss_timestamp()));
+        let _ = msg
+            .channel_id
+            .send_message(&ctx.http, CreateMessage::new().embed(embed))
+            .await;
+        return;
+    }
+
+    if data.week_labels.len() < 2 {
+        let embed = CreateEmbed::new()
+            .color(COLOR_GRAY)
+            .title("📊 Not Enough Data")
+            .description("Need at least 2 weeks of data to draw a chart.")
+            .footer(CreateEmbedFooter::new(swiss_timestamp()));
+        let _ = msg
+            .channel_id
+            .send_message(&ctx.http, CreateMessage::new().embed(embed))
+            .await;
+        return;
+    }
+
+    let png_bytes = match crate::chart::render_chart(&data, mode) {
+        Ok(b) => b,
+        Err(e) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_RED)
+                .title("📊 Render Error")
+                .description(format!("Failed to generate chart: {}", e))
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+            return;
+        }
+    };
+
+    // Build a summary of the top users for the embed description.
+    let first_week = data.week_labels.first().map(String::as_str).unwrap_or("?");
+    let last_week = data.week_labels.last().map(String::as_str).unwrap_or("?");
+
+    let mut user_summary = String::new();
+    for (i, user) in data.users.iter().enumerate() {
+        let total_min: i64 = user.minutes_per_week.iter().sum();
+        user_summary += &format!(
+            "{} **{}** — {}\n",
+            CHART_MEDALS[i],
+            user.username,
+            format_duration(total_min)
+        );
+    }
+
+    let embed = CreateEmbed::new()
+        .color(COLOR_BLUE)
+        .title(format!("📈 Weekly Hours Chart — {} weeks", weeks))
+        .description(format!(
+            "**Range:** {} → {}\n**Mode:** {}\n\n{}",
+            first_week, last_week, mode_str, user_summary
+        ))
+        .image("attachment://chart.png")
+        .footer(CreateEmbedFooter::new(swiss_timestamp()));
+
+    let attachment = CreateAttachment::bytes(png_bytes, "chart.png");
+    let _ = msg
+        .channel_id
+        .send_message(
+            &ctx.http,
+            CreateMessage::new().embed(embed).add_file(attachment),
+        )
+        .await;
 }

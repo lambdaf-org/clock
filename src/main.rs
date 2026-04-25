@@ -1,3 +1,4 @@
+mod chart;
 mod commands;
 mod db;
 mod normalize;
