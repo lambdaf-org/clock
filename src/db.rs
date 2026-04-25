@@ -1,6 +1,7 @@
-use chrono::{Datelike, Duration, NaiveDateTime, Utc};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Utc};
 use chrono_tz::Europe::Zurich;
 use rusqlite::{params, Connection};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -42,6 +43,20 @@ pub struct WeeklySummary {
     pub breakdown: Vec<ActivityEntry>,
 }
 
+#[derive(Debug)]
+pub struct UserWeeklyData {
+    pub username: String,
+    pub minutes_per_week: Vec<i64>,
+}
+
+#[derive(Debug)]
+pub struct ChartData {
+    /// Week labels in chronological order (oldest first).
+    pub week_labels: Vec<String>,
+    /// Top-5 users ordered by total minutes (descending).
+    pub users: Vec<UserWeeklyData>,
+}
+
 pub fn now_ch() -> NaiveDateTime {
     Utc::now().with_timezone(&Zurich).naive_local()
 }
@@ -60,6 +75,24 @@ fn monday_of_current_week() -> String {
     let wd = now.weekday().num_days_from_monday() as i64;
     let monday = now.date() - Duration::days(wd);
     monday.format("%Y-%m-%d 00:00:00").to_string()
+}
+
+/// Generate the last `weeks` ISO week labels (oldest first, newest last),
+/// matching the `KW%V/%G` format used by `swiss_week_label()`.
+fn generate_week_labels(weeks: u32) -> Vec<String> {
+    let now = Utc::now().with_timezone(&Zurich);
+    let today = now.date_naive();
+    let wd = today.weekday().num_days_from_monday() as i64;
+    let current_monday: NaiveDate = today - Duration::days(wd);
+
+    (0..weeks as i64)
+        .rev()
+        .map(|i| {
+            let monday = current_monday - Duration::weeks(i);
+            let iso = monday.iso_week();
+            format!("KW{:02}/{}", iso.week(), iso.year())
+        })
+        .collect()
 }
 
 impl Db {
@@ -593,6 +626,108 @@ impl Db {
 
         Ok((sessions_updated, archive_rows_merged))
     }
+
+    /// Return per-user weekly minutes for the last `weeks` weeks, capped to the top 5 users
+    /// by total minutes in that window.  Week labels are in chronological order (oldest first).
+    pub fn weekly_hours_for_chart(&self, weeks: u32) -> anyhow::Result<ChartData> {
+        if weeks == 0 {
+            anyhow::bail!("weeks must be at least 1");
+        }
+
+        let week_labels = generate_week_labels(weeks);
+        let current_week_label = swiss_week_label();
+        let monday = monday_of_current_week();
+        let conn = self.conn.lock().unwrap();
+
+        // user_id -> (username, week_label -> minutes)
+        let mut user_data: HashMap<String, (String, HashMap<String, i64>)> = HashMap::new();
+
+        // ── Past weeks: pull from weekly_archive ──────────────────────────
+        let past_labels: Vec<&str> = week_labels
+            .iter()
+            .filter(|wl| wl.as_str() != current_week_label.as_str())
+            .map(String::as_str)
+            .collect();
+
+        if !past_labels.is_empty() {
+            let placeholders = past_labels.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT user_id, username, week_label, SUM(total_min) as total \
+                 FROM weekly_archive WHERE week_label IN ({}) \
+                 GROUP BY user_id, week_label",
+                placeholders
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(past_labels.iter()), |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            })?;
+            for row in rows.filter_map(|r| r.ok()) {
+                let (uid, username, week_label, minutes) = row;
+                let entry = user_data
+                    .entry(uid)
+                    .or_insert_with(|| (username, HashMap::new()));
+                *entry.1.entry(week_label).or_insert(0) += minutes;
+            }
+        }
+
+        // ── Current week: pull from sessions ──────────────────────────────
+        let mut stmt = conn.prepare(
+            "SELECT user_id, username, SUM(minutes) as total FROM sessions \
+             WHERE ended_at IS NOT NULL AND started_at >= ?1 \
+             GROUP BY user_id",
+        )?;
+        let rows = stmt.query_map(params![monday], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        for row in rows.filter_map(|r| r.ok()) {
+            let (uid, username, minutes) = row;
+            let entry = user_data
+                .entry(uid)
+                .or_insert_with(|| (username, HashMap::new()));
+            *entry.1.entry(current_week_label.clone()).or_insert(0) += minutes;
+        }
+
+        // ── Find top 5 by total minutes in the window ─────────────────────
+        let mut user_totals: Vec<(String, String, i64)> = user_data
+            .iter()
+            .map(|(uid, (name, weeks_map))| {
+                let total: i64 = weeks_map.values().sum();
+                (uid.clone(), name.clone(), total)
+            })
+            .collect();
+        user_totals.sort_by(|a, b| b.2.cmp(&a.2));
+        user_totals.truncate(5);
+
+        // ── Build ordered output ───────────────────────────────────────────
+        let users: Vec<UserWeeklyData> = user_totals
+            .into_iter()
+            .map(|(uid, username, _)| {
+                let weeks_map = user_data
+                    .remove(&uid)
+                    .map(|(_, m)| m)
+                    .unwrap_or_default();
+                let minutes_per_week = week_labels
+                    .iter()
+                    .map(|wl| *weeks_map.get(wl).unwrap_or(&0))
+                    .collect();
+                UserWeeklyData {
+                    username,
+                    minutes_per_week,
+                }
+            })
+            .collect();
+
+        Ok(ChartData { week_labels, users })
+    }
 }
 
 #[cfg(test)]
@@ -752,5 +887,85 @@ mod tests {
             )
             .unwrap();
         assert_eq!(user2_activity, "boring work");
+    }
+
+    #[test]
+    fn test_weekly_hours_for_chart_empty() {
+        let (db, _temp_dir) = setup_test_db();
+        // No data at all → returns empty users list (no error)
+        let chart = db.weekly_hours_for_chart(4).unwrap();
+        assert_eq!(chart.week_labels.len(), 4);
+        assert!(chart.users.is_empty());
+    }
+
+    #[test]
+    fn test_weekly_hours_for_chart_archive_data() {
+        let (db, _temp_dir) = setup_test_db();
+
+        // Insert archive rows for two past weeks and two users.
+        let week_labels = generate_week_labels(4);
+        // Use the oldest two weeks (index 0 and 1) for past data.
+        let week_a = &week_labels[0];
+        let week_b = &week_labels[1];
+
+        {
+            let conn = db.conn.lock().unwrap();
+            // User A: 120 min in week_a, 60 min in week_b  → total 180
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["a", "Alice", week_a, 120i64],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["a", "Alice", week_b, 60i64],
+            ).unwrap();
+            // User B: 90 min in week_a only → total 90
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["b", "Bob", week_a, 90i64],
+            ).unwrap();
+        }
+
+        let chart = db.weekly_hours_for_chart(4).unwrap();
+        assert_eq!(chart.week_labels.len(), 4);
+        // Both users should appear; Alice first (higher total).
+        assert_eq!(chart.users.len(), 2);
+        assert_eq!(chart.users[0].username, "Alice");
+        assert_eq!(chart.users[1].username, "Bob");
+
+        // Alice's minutes for week_a and week_b should be correct.
+        let alice_idx_a = chart.week_labels.iter().position(|l| l == week_a).unwrap();
+        let alice_idx_b = chart.week_labels.iter().position(|l| l == week_b).unwrap();
+        assert_eq!(chart.users[0].minutes_per_week[alice_idx_a], 120);
+        assert_eq!(chart.users[0].minutes_per_week[alice_idx_b], 60);
+
+        // Bob's minutes for week_a should be 90, week_b should be 0.
+        assert_eq!(chart.users[1].minutes_per_week[alice_idx_a], 90);
+        assert_eq!(chart.users[1].minutes_per_week[alice_idx_b], 0);
+    }
+
+    #[test]
+    fn test_weekly_hours_for_chart_top5_cap() {
+        let (db, _temp_dir) = setup_test_db();
+
+        let week_labels = generate_week_labels(2);
+        let week_a = &week_labels[0];
+
+        {
+            let conn = db.conn.lock().unwrap();
+            // Insert 6 users with distinct totals.
+            for i in 1u32..=6 {
+                conn.execute(
+                    "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                    params![format!("u{}", i), format!("User{}", i), week_a, (i * 10) as i64],
+                ).unwrap();
+            }
+        }
+
+        let chart = db.weekly_hours_for_chart(2).unwrap();
+        // Must be capped at 5 users.
+        assert_eq!(chart.users.len(), 5);
+        // Top user should be User6 (60 min).
+        assert_eq!(chart.users[0].username, "User6");
     }
 }
