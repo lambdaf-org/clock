@@ -210,44 +210,46 @@ mod tests {
         }
     }
 
-    /// Attempt to render; returns `None` if system fonts are unavailable
-    /// (plotters panics in that case rather than returning an error).
-    fn try_render(data: &ChartData, mode: ChartMode) -> Option<Vec<u8>> {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            render_chart(data, mode).ok()
-        }))
-        .ok()
-        .flatten()
+    fn register_test_font() {
+        static FONT: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
+        use plotters::style::{register_font, FontStyle};
+        for style in [
+            FontStyle::Normal,
+            FontStyle::Bold,
+            FontStyle::Italic,
+            FontStyle::Oblique,
+        ] {
+            // "already registered" errors are fine in parallel tests; ignore them.
+            let _ = register_font("sans-serif", style, FONT);
+        }
     }
 
     #[test]
     fn test_render_totals_produces_png() {
+        register_test_font();
         let data = make_data();
-        if let Some(bytes) = try_render(&data, ChartMode::Totals) {
-            // PNG magic bytes: 0x89 P N G \r \n 0x1a \n
-            assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "output is not a PNG");
-            assert!(bytes.len() > 1000, "PNG seems too small");
-        }
-        // If no system fonts are available, plotters panics; we skip gracefully.
+        let bytes = render_chart(&data, ChartMode::Totals).expect("render failed");
+        // PNG magic bytes: 0x89 P N G \r \n 0x1a \n
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "output is not a PNG");
+        assert!(bytes.len() > 1000, "PNG seems too small");
     }
 
     #[test]
     fn test_render_cumulative_produces_png() {
+        register_test_font();
         let data = make_data();
-        if let Some(bytes) = try_render(&data, ChartMode::Cumulative) {
-            assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
-        }
+        let bytes = render_chart(&data, ChartMode::Cumulative).expect("render failed");
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
     }
 
     #[test]
     fn test_render_both_produces_larger_png() {
+        register_test_font();
         let data = make_data();
-        let totals = try_render(&data, ChartMode::Totals);
-        let both = try_render(&data, ChartMode::Both);
-        if let (Some(t), Some(b)) = (totals, both) {
-            // "both" is 1200×900 vs 1200×600 so should produce more pixel data.
-            assert!(b.len() > t.len());
-        }
+        let totals = render_chart(&data, ChartMode::Totals).expect("render totals failed");
+        let both = render_chart(&data, ChartMode::Both).expect("render both failed");
+        // "both" is 1200×900 vs 1200×600 so should produce more pixel data.
+        assert!(both.len() > totals.len());
     }
 
     #[test]
