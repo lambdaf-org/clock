@@ -75,8 +75,7 @@ pub fn render_chart(data: &ChartData, mode: ChartMode) -> anyhow::Result<Vec<u8>
     // Render to a raw RGB pixel buffer (3 bytes per pixel).
     let mut pixel_buf = vec![0u8; (width * height * 3) as usize];
     {
-        let root =
-            BitMapBackend::with_buffer(&mut pixel_buf, (width, height)).into_drawing_area();
+        let root = BitMapBackend::with_buffer(&mut pixel_buf, (width, height)).into_drawing_area();
         root.fill(&BG)
             .map_err(|e| anyhow::anyhow!("fill error: {:?}", e))?;
 
@@ -128,7 +127,12 @@ where
     let raw_max: f64 = if cumulative {
         data.users
             .iter()
-            .map(|u| u.minutes_per_week.iter().map(|&m| m as f64 / 60.0).sum::<f64>())
+            .map(|u| {
+                u.minutes_per_week
+                    .iter()
+                    .map(|&m| m as f64 / 60.0)
+                    .sum::<f64>()
+            })
             .fold(0.0_f64, f64::max)
     } else {
         data.users
@@ -205,7 +209,10 @@ where
                 area_pts.push((first_x, 0.0));
             }
             chart
-                .draw_series(std::iter::once(Polygon::new(area_pts, color.mix(0.10).filled())))
+                .draw_series(std::iter::once(Polygon::new(
+                    area_pts,
+                    color.mix(0.10).filled(),
+                )))
                 .map_err(|e| anyhow::anyhow!("draw area: {:?}", e))?;
         }
 
@@ -266,7 +273,7 @@ mod tests {
 
     fn register_test_font() {
         static FONT: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
-        use plotters::style::{register_font, FontStyle};
+        use plotters::style::{FontStyle, register_font};
         for style in [
             FontStyle::Normal,
             FontStyle::Bold,
@@ -298,7 +305,10 @@ mod tests {
         let data = make_data();
         let bytes = render_chart(&data, ChartMode::Totals).expect("render failed");
         // PNG magic bytes: 0x89 P N G \r \n 0x1a \n
-        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "output is not a PNG");
+        assert!(
+            bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "output is not a PNG"
+        );
         assert!(bytes.len() > 1000, "PNG seems too small");
     }
 
