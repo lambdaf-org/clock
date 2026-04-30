@@ -2,10 +2,12 @@ mod chart;
 mod commands;
 mod db;
 mod normalize;
+mod roles;
 
 use db::Db;
 use dotenv::dotenv;
-use plotters::style::{register_font, FontStyle};
+use plotters::style::{FontStyle, register_font};
+use roles::RoleClassifier;
 use serenity::all::*;
 use serenity::async_trait;
 use std::env;
@@ -16,6 +18,7 @@ static EMBEDDED_FONT: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
 
 struct Handler {
     db: Arc<Db>,
+    classifier: Arc<RoleClassifier>,
 }
 
 #[async_trait]
@@ -34,9 +37,9 @@ impl EventHandler for Handler {
             let embed = CreateEmbed::new()
                 .color(0x2ecc71)
                 .title("✅ ClockBot Online")
-                .description(format!(
+                .description(
                     "Summary channel verified.\nWeekly reports will post here every Monday 00:00.",
-                ))
+                )
                 .footer(CreateEmbedFooter::new(
                     db::now_ch().format("%d.%m.%Y %H:%M").to_string(),
                 ));
@@ -51,6 +54,10 @@ fn summary_channel_id() -> Option<ChannelId> {
     env::var("SUMMARY_CHANNEL")
         .ok()
         .and_then(|s| s.parse().ok())
+}
+
+fn guild_id() -> Option<GuildId> {
+    env::var("GUILD_ID").ok().and_then(|s| s.parse().ok())
 }
 
 #[tokio::main]
@@ -79,7 +86,11 @@ async fn main() -> anyhow::Result<()> {
     db.normalize_activities()?;
     println!("[clock] Activity names normalized");
 
+    // Load embedding model (downloads on first run, cached after)
+    let classifier = Arc::new(RoleClassifier::new()?);
+
     let db_clone = Arc::clone(&db);
+    let classifier_clone = Arc::clone(&classifier);
     let token_clone = token.clone();
     tokio::spawn(async move {
         // On startup: assign roles from last archived week if missed
@@ -96,9 +107,10 @@ async fn main() -> anyhow::Result<()> {
         weekly_reset_loop(&db_clone, &classifier_clone, &token_clone).await;
     });
 
-    let intents = GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
+    let intents =
+        GatewayIntents::GUILDS | GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
     let mut client = Client::builder(&token, intents)
-        .event_handler(Handler { db })
+        .event_handler(Handler { db, classifier })
         .await
         .expect("Failed to build client");
 
