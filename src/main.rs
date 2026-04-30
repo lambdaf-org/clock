@@ -1,19 +1,21 @@
+mod chart;
 mod commands;
 mod db;
 mod normalize;
-mod roles;
 
 use db::Db;
 use dotenv::dotenv;
-use roles::RoleClassifier;
+use plotters::style::{register_font, FontStyle};
 use serenity::all::*;
 use serenity::async_trait;
 use std::env;
+use std::path::Path;
 use std::sync::Arc;
+
+static EMBEDDED_FONT: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
 
 struct Handler {
     db: Arc<Db>,
-    classifier: Arc<RoleClassifier>,
 }
 
 #[async_trait]
@@ -32,9 +34,9 @@ impl EventHandler for Handler {
             let embed = CreateEmbed::new()
                 .color(0x2ecc71)
                 .title("✅ ClockBot Online")
-                .description(
+                .description(format!(
                     "Summary channel verified.\nWeekly reports will post here every Monday 00:00.",
-                )
+                ))
                 .footer(CreateEmbedFooter::new(
                     db::now_ch().format("%d.%m.%Y %H:%M").to_string(),
                 ));
@@ -51,27 +53,33 @@ fn summary_channel_id() -> Option<ChannelId> {
         .and_then(|s| s.parse().ok())
 }
 
-fn guild_id() -> Option<GuildId> {
-    env::var("GUILD_ID").ok().and_then(|s| s.parse().ok())
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
 
+    // Register the embedded DejaVuSans font for every style so plotters'
+    // ab_glyph backend can draw text without needing system fonts.
+    // We register the same TTF for all four styles; bold/italic variants will
+    // render as regular weight but will not panic.
+    for style in [
+        FontStyle::Normal,
+        FontStyle::Bold,
+        FontStyle::Italic,
+        FontStyle::Oblique,
+    ] {
+        if let Err(_) = register_font("sans-serif", style, EMBEDDED_FONT) {
+            eprintln!("[clock] Warning: failed to register embedded font for a style");
+        }
+    }
+
     let token = env::var("DISCORD_TOKEN").expect("DISCORD_TOKEN missing");
-    let db_url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:///data/clock.db".into());
-    let db = Arc::new(Db::open(&db_url).await?);
+    let db = Arc::new(Db::open(Path::new("/data/clock.db"))?);
 
     // Normalize all existing activity names in the database
-    db.normalize_activities().await?;
+    db.normalize_activities()?;
     println!("[clock] Activity names normalized");
 
-    // Load embedding model (downloads on first run, cached after)
-    let classifier = Arc::new(RoleClassifier::new()?);
-
     let db_clone = Arc::clone(&db);
-    let classifier_clone = Arc::clone(&classifier);
     let token_clone = token.clone();
     tokio::spawn(async move {
         // On startup: assign roles from last archived week if missed
@@ -88,10 +96,9 @@ async fn main() -> anyhow::Result<()> {
         weekly_reset_loop(&db_clone, &classifier_clone, &token_clone).await;
     });
 
-    let intents =
-        GatewayIntents::GUILDS | GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
+    let intents = GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
     let mut client = Client::builder(&token, intents)
-        .event_handler(Handler { db, classifier })
+        .event_handler(Handler { db })
         .await
         .expect("Failed to build client");
 
@@ -245,7 +252,7 @@ async fn weekly_reset_loop(db: &Arc<Db>, classifier: &Arc<RoleClassifier>, token
 
         // ── Post summary ──
         if let Some(channel_id) = summary_channel {
-            match db.weekly_summary().await {
+            match db.weekly_summary() {
                 Ok(summary) if summary.total_sessions > 0 => {
                     let embeds = commands::build_weekly_summary_embeds(&summary, &week_label);
                     let mut msg = CreateMessage::new();
@@ -263,8 +270,8 @@ async fn weekly_reset_loop(db: &Arc<Db>, classifier: &Arc<RoleClassifier>, token
             }
         }
 
-        // ── Archive ──
-        match db.archive_week(&week_label).await {
+        // Archive and clear
+        match db.archive_week(&week_label) {
             Ok(()) => println!("[clock] Archived {week_label}"),
             Err(e) => eprintln!("[clock] Archive failed: {e}"),
         }
