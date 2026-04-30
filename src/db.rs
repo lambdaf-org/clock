@@ -1,10 +1,12 @@
-use chrono::{Datelike, Duration, NaiveDateTime, Utc};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Utc};
 use chrono_tz::Europe::Zurich;
-use sqlx::any::AnyPoolOptions;
-use sqlx::{Any, Pool, Row};
+use rusqlite::{params, Connection};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Mutex;
 
 pub struct Db {
-    pool: Pool<Any>,
+    conn: Mutex<Connection>,
 }
 
 #[derive(Debug)]
@@ -42,11 +44,17 @@ pub struct WeeklySummary {
 }
 
 #[derive(Debug)]
-pub struct UserActivityEntry {
-    pub user_id: String,
+pub struct UserWeeklyData {
     pub username: String,
-    pub activity: String,
-    pub total_minutes: i64,
+    pub minutes_per_week: Vec<i64>,
+}
+
+#[derive(Debug)]
+pub struct ChartData {
+    /// Week labels in chronological order (oldest first).
+    pub week_labels: Vec<String>,
+    /// Top-5 users ordered by total minutes (descending).
+    pub users: Vec<UserWeeklyData>,
 }
 
 pub fn now_ch() -> NaiveDateTime {
@@ -69,364 +77,294 @@ fn monday_of_current_week() -> String {
     monday.format("%Y-%m-%d 00:00:00").to_string()
 }
 
+/// Generate the last `weeks` ISO week labels (oldest first, newest last),
+/// matching the `KW%V/%G` format used by `swiss_week_label()`.
+pub(crate) fn generate_week_labels(weeks: u32) -> Vec<String> {
+    let now = Utc::now().with_timezone(&Zurich);
+    let today = now.date_naive();
+    let wd = today.weekday().num_days_from_monday() as i64;
+    let current_monday: NaiveDate = today - Duration::days(wd);
+
+    (0..weeks as i64)
+        .rev()
+        .map(|i| {
+            let monday = current_monday - Duration::weeks(i);
+            let iso = monday.iso_week();
+            format!("KW{:02}/{}", iso.week(), iso.year())
+        })
+        .collect()
+}
+
 impl Db {
-    pub async fn open(database_url: &str) -> anyhow::Result<Self> {
-        sqlx::any::install_default_drivers();
-        let pool = AnyPoolOptions::new().connect(database_url).await?;
-
-        let is_postgres = database_url.starts_with("postgres");
-
-        let pk_type = if is_postgres {
-            "BIGSERIAL PRIMARY KEY"
-        } else {
-            "INTEGER PRIMARY KEY AUTOINCREMENT"
-        };
-
-        let ddl = format!(
+    pub fn open(path: &Path) -> anyhow::Result<Self> {
+        let conn = Connection::open(path)?;
+        conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS sessions (
-                id          {pk},
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id     TEXT    NOT NULL,
                 username    TEXT    NOT NULL,
                 activity    TEXT    NOT NULL,
                 started_at  TEXT    NOT NULL,
                 ended_at    TEXT,
                 minutes     INTEGER
-            )",
-            pk = pk_type
-        );
-        sqlx::query(&ddl).execute(&pool).await?;
-
-        let ddl2 = format!(
-            "CREATE TABLE IF NOT EXISTS weekly_archive (
-                id          {pk},
+            );
+            CREATE TABLE IF NOT EXISTS weekly_archive (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id     TEXT    NOT NULL,
                 username    TEXT    NOT NULL,
                 week_label  TEXT    NOT NULL,
                 total_min   INTEGER NOT NULL
-            )",
-            pk = pk_type
-        );
-        sqlx::query(&ddl2).execute(&pool).await?;
-
-        let ddl3 = format!(
-            "CREATE TABLE IF NOT EXISTS activity_archive (
-                id          {pk},
+            );
+            CREATE TABLE IF NOT EXISTS activity_archive (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id     TEXT    NOT NULL,
                 username    TEXT    NOT NULL,
                 week_label  TEXT    NOT NULL,
                 activity    TEXT    NOT NULL,
                 total_min   INTEGER NOT NULL
-            )",
-            pk = pk_type
-        );
-        sqlx::query(&ddl3).execute(&pool).await?;
-
-        let ddl4 = "CREATE TABLE IF NOT EXISTS metadata (
-            key   TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        )";
-        sqlx::query(ddl4).execute(&pool).await?;
-
-        let ddl5 = format!(
-            "CREATE TABLE IF NOT EXISTS user_aliases (
-                id          {pk},
-                user_id     TEXT NOT NULL,
-                keyword     TEXT NOT NULL,
-                activity    TEXT NOT NULL,
-                UNIQUE(user_id, keyword)
-            )",
-            pk = pk_type
-        );
-        sqlx::query(&ddl5).execute(&pool).await?;
-
-        let ddl6 = format!(
-            "CREATE TABLE IF NOT EXISTS global_aliases (
-                id          {pk},
-                keyword     TEXT NOT NULL UNIQUE,
-                activity    TEXT NOT NULL
-            )",
-            pk = pk_type
-        );
-        sqlx::query(&ddl6).execute(&pool).await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sess_user ON sessions(user_id)")
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sess_end ON sessions(ended_at)")
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_arch_user ON weekly_archive(user_id)")
-            .execute(&pool)
-            .await
-            .ok();
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_actarch_user ON activity_archive(user_id)")
-            .execute(&pool)
-            .await
-            .ok();
-
-        Ok(Self { pool })
+            );
+            CREATE TABLE IF NOT EXISTS metadata (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sess_user   ON sessions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_sess_end    ON sessions(ended_at);
+            CREATE INDEX IF NOT EXISTS idx_arch_user   ON weekly_archive(user_id);
+            CREATE INDEX IF NOT EXISTS idx_actarch_user ON activity_archive(user_id);",
+        )?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
-    pub async fn clock_in(
-        &self,
-        user_id: &str,
-        username: &str,
-        activity: &str,
-    ) -> anyhow::Result<()> {
-        let row = sqlx::query(
-            "SELECT COUNT(*) as cnt FROM sessions WHERE user_id = $1 AND ended_at IS NULL",
-        )
-        .bind(user_id)
-        .fetch_one(&self.pool)
-        .await?;
-        let count: i64 = row.get("cnt");
-        if count > 0 {
+    pub fn clock_in(&self, user_id: &str, username: &str, activity: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let active: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sessions WHERE user_id=?1 AND ended_at IS NULL",
+            params![user_id],
+            |r| r.get(0),
+        )?;
+        if active {
             anyhow::bail!("already clocked in");
         }
-        sqlx::query("INSERT INTO sessions (user_id, username, activity, started_at) VALUES ($1, $2, $3, $4)")
-            .bind(user_id)
-            .bind(username)
-            .bind(activity)
-            .bind(now_ch_str())
-            .execute(&self.pool)
-            .await?;
+        conn.execute(
+            "INSERT INTO sessions (user_id,username,activity,started_at) VALUES (?1,?2,?3,?4)",
+            params![user_id, username, activity, now_ch_str()],
+        )?;
         Ok(())
     }
 
-    pub async fn clock_out(&self, user_id: &str) -> anyhow::Result<(i64, String)> {
-        let row = sqlx::query(
-            "SELECT id, started_at, activity FROM sessions WHERE user_id = $1 AND ended_at IS NULL",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await?;
+    pub fn clock_out(&self, user_id: &str) -> anyhow::Result<(i64, String)> {
+        let conn = self.conn.lock().unwrap();
+        let row: Option<(i64, String, String)> = conn
+            .query_row(
+                "SELECT id,started_at,activity FROM sessions WHERE user_id=?1 AND ended_at IS NULL",
+                params![user_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok();
         match row {
-            Some(r) => {
-                let id: i64 = r.get("id");
-                let started_str: String = r.get("started_at");
-                let activity: String = r.get("activity");
+            Some((id, started_str, activity)) => {
                 let started = NaiveDateTime::parse_from_str(&started_str, "%Y-%m-%d %H:%M:%S")?;
                 let now = now_ch();
                 let minutes = (now - started).num_minutes();
-                sqlx::query("UPDATE sessions SET ended_at = $1, minutes = $2 WHERE id = $3")
-                    .bind(now_ch_str())
-                    .bind(minutes)
-                    .bind(id)
-                    .execute(&self.pool)
-                    .await?;
+                conn.execute(
+                    "UPDATE sessions SET ended_at=?1, minutes=?2 WHERE id=?3",
+                    params![now_ch_str(), minutes, id],
+                )?;
                 Ok((minutes, activity))
             }
             None => anyhow::bail!("not clocked in"),
         }
     }
 
-    pub async fn active_session(&self, user_id: &str) -> anyhow::Result<Option<ActiveSession>> {
-        let row = sqlx::query(
-            "SELECT id, user_id, username, activity, started_at FROM sessions WHERE user_id = $1 AND ended_at IS NULL",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|r| {
-            let started_str: String = r.get("started_at");
-            ActiveSession {
-                id: r.get("id"),
-                user_id: r.get("user_id"),
-                username: r.get("username"),
-                activity: r.get("activity"),
-                started_at: NaiveDateTime::parse_from_str(&started_str, "%Y-%m-%d %H:%M:%S")
-                    .unwrap(),
-            }
-        }))
+    pub fn active_session(&self, user_id: &str) -> anyhow::Result<Option<ActiveSession>> {
+        let conn = self.conn.lock().unwrap();
+        match conn.query_row(
+            "SELECT id,user_id,username,activity,started_at FROM sessions WHERE user_id=?1 AND ended_at IS NULL",
+            params![user_id],
+            |r| Ok(ActiveSession {
+                id: r.get(0)?,
+                user_id: r.get(1)?,
+                username: r.get(2)?,
+                activity: r.get(3)?,
+                started_at: NaiveDateTime::parse_from_str(&r.get::<_,String>(4)?, "%Y-%m-%d %H:%M:%S").unwrap(),
+            }),
+        ) {
+            Ok(s) => Ok(Some(s)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
-    pub async fn leaderboard_weekly(&self) -> anyhow::Result<Vec<LeaderboardEntry>> {
+    pub fn leaderboard_weekly(&self) -> anyhow::Result<Vec<LeaderboardEntry>> {
+        let conn = self.conn.lock().unwrap();
         let monday = monday_of_current_week();
-        let rows = sqlx::query(
-            "SELECT MAX(username) as username, SUM(minutes) as total
-             FROM sessions
-             WHERE ended_at IS NOT NULL AND started_at >= $1
+        let mut stmt = conn.prepare(
+            "SELECT username, SUM(minutes) as total FROM sessions
+             WHERE ended_at IS NOT NULL AND started_at >= ?1
              GROUP BY user_id ORDER BY total DESC LIMIT 15",
-        )
-        .bind(&monday)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| LeaderboardEntry {
-                username: r.get("username"),
-                total_minutes: r.get("total"),
+        )?;
+        let rows = stmt.query_map(params![monday], |r| {
+            Ok(LeaderboardEntry {
+                username: r.get(0)?,
+                total_minutes: r.get(1)?,
             })
-            .collect())
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub async fn leaderboard_alltime(&self) -> anyhow::Result<Vec<LeaderboardEntry>> {
-        let rows = sqlx::query(
-            "SELECT MAX(username) as username, SUM(mins) as total FROM (
+    pub fn leaderboard_alltime(&self) -> anyhow::Result<Vec<LeaderboardEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT username, SUM(mins) as total FROM (
                 SELECT user_id, username, SUM(minutes) as mins FROM sessions
-                    WHERE ended_at IS NOT NULL GROUP BY user_id, username
+                    WHERE ended_at IS NOT NULL GROUP BY user_id
                 UNION ALL
                 SELECT user_id, username, SUM(total_min) as mins FROM weekly_archive
-                    GROUP BY user_id, username
-             ) sub GROUP BY user_id ORDER BY total DESC LIMIT 15",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| LeaderboardEntry {
-                username: r.get("username"),
-                total_minutes: r.get("total"),
+                    GROUP BY user_id
+             ) GROUP BY user_id ORDER BY total DESC LIMIT 15",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(LeaderboardEntry {
+                username: r.get(0)?,
+                total_minutes: r.get(1)?,
             })
-            .collect())
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub async fn archive_week(&self, week_label: &str) -> anyhow::Result<()> {
-        sqlx::query(
-            "INSERT INTO weekly_archive (user_id, username, week_label, total_min)
-             SELECT user_id, MAX(username), $1, SUM(minutes) FROM sessions
+    pub fn archive_week(&self, week_label: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        // Archive totals per user
+        conn.execute(
+            "INSERT INTO weekly_archive (user_id,username,week_label,total_min)
+             SELECT user_id,username,?1,SUM(minutes) FROM sessions
              WHERE ended_at IS NOT NULL GROUP BY user_id",
-        )
-        .bind(week_label)
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            "INSERT INTO activity_archive (user_id, username, week_label, activity, total_min)
-             SELECT user_id, MAX(username), $1, activity, SUM(minutes) FROM sessions
+            params![week_label],
+        )?;
+        // Archive per-activity breakdown
+        conn.execute(
+            "INSERT INTO activity_archive (user_id,username,week_label,activity,total_min)
+             SELECT user_id,username,?1,activity,SUM(minutes) FROM sessions
              WHERE ended_at IS NOT NULL GROUP BY user_id, activity",
-        )
-        .bind(week_label)
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query("DELETE FROM sessions WHERE ended_at IS NOT NULL")
-            .execute(&self.pool)
-            .await?;
-
+            params![week_label],
+        )?;
+        conn.execute("DELETE FROM sessions WHERE ended_at IS NOT NULL", [])?;
         Ok(())
     }
 
-    pub async fn activity_breakdown_weekly(&self) -> anyhow::Result<Vec<ActivityEntry>> {
+    /// Activity breakdown for current week per user.
+    pub fn activity_breakdown_weekly(&self) -> anyhow::Result<Vec<ActivityEntry>> {
+        let conn = self.conn.lock().unwrap();
         let monday = monday_of_current_week();
-        let rows = sqlx::query(
-            "SELECT MAX(username) as username, activity, SUM(minutes) as total, COUNT(*) as sessions
+        let mut stmt = conn.prepare(
+            "SELECT username, activity, SUM(minutes) as total, COUNT(*) as sessions
              FROM sessions
-             WHERE ended_at IS NOT NULL AND started_at >= $1
+             WHERE ended_at IS NOT NULL AND started_at >= ?1
              GROUP BY user_id, activity
              ORDER BY username ASC, total DESC",
-        )
-        .bind(&monday)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| ActivityEntry {
-                username: r.get("username"),
-                activity: r.get("activity"),
-                total_minutes: r.get("total"),
-                session_count: r.get("sessions"),
+        )?;
+        let rows = stmt.query_map(params![monday], |r| {
+            Ok(ActivityEntry {
+                username: r.get(0)?,
+                activity: r.get(1)?,
+                total_minutes: r.get(2)?,
+                session_count: r.get(3)?,
             })
-            .collect())
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub async fn activity_breakdown_alltime(&self) -> anyhow::Result<Vec<ActivityEntry>> {
-        let rows = sqlx::query(
-            "SELECT MAX(username) as username, activity, SUM(mins) as total, SUM(cnt) as sessions FROM (
-                SELECT user_id, username, activity, SUM(minutes) as mins, COUNT(*) as cnt
+    /// Activity breakdown for all time (archived + current).
+    pub fn activity_breakdown_alltime(&self) -> anyhow::Result<Vec<ActivityEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT username, activity, SUM(mins) as total, SUM(cnt) as sessions FROM (
+                SELECT username, activity, SUM(minutes) as mins, COUNT(*) as cnt
                     FROM sessions WHERE ended_at IS NOT NULL
                     GROUP BY user_id, activity
                 UNION ALL
-                SELECT user_id, username, activity, SUM(total_min) as mins, 0 as cnt
+                SELECT username, activity, SUM(total_min) as mins, 0 as cnt
                     FROM activity_archive
                     GROUP BY user_id, activity
-             ) sub GROUP BY user_id, activity ORDER BY username ASC, total DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| ActivityEntry {
-                username: r.get("username"),
-                activity: r.get("activity"),
-                total_minutes: r.get("total"),
-                session_count: r.get("sessions"),
+             ) GROUP BY username, activity ORDER BY username ASC, total DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ActivityEntry {
+                username: r.get(0)?,
+                activity: r.get(1)?,
+                total_minutes: r.get(2)?,
+                session_count: r.get(3)?,
             })
-            .collect())
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub async fn weekly_summary(&self) -> anyhow::Result<WeeklySummary> {
+    /// Weekly summary data for the automated post.
+    pub fn weekly_summary(&self) -> anyhow::Result<WeeklySummary> {
+        let conn = self.conn.lock().unwrap();
         let monday = monday_of_current_week();
 
-        let totals = sqlx::query(
-            "SELECT COALESCE(SUM(minutes),0) as total_min, COUNT(*) as total_sessions, COUNT(DISTINCT user_id) as unique_workers
-             FROM sessions WHERE ended_at IS NOT NULL AND started_at >= $1",
-        )
-        .bind(&monday)
-        .fetch_one(&self.pool)
-        .await?;
-        let total_minutes: i64 = totals.get("total_min");
-        let total_sessions: i64 = totals.get("total_sessions");
-        let unique_workers: i64 = totals.get("unique_workers");
+        // Total hours, total sessions, unique workers
+        let (total_min, total_sessions, unique_workers): (i64, i64, i64) = conn.query_row(
+            "SELECT COALESCE(SUM(minutes),0), COUNT(*), COUNT(DISTINCT user_id)
+             FROM sessions WHERE ended_at IS NOT NULL AND started_at >= ?1",
+            params![monday],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
 
-        let mvp = sqlx::query(
-            "SELECT MAX(username) as username, SUM(minutes) as total FROM sessions
-             WHERE ended_at IS NOT NULL AND started_at >= $1
+        // MVP (most minutes)
+        let mvp: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT username, SUM(minutes) as total FROM sessions
+             WHERE ended_at IS NOT NULL AND started_at >= ?1
              GROUP BY user_id ORDER BY total DESC LIMIT 1",
-        )
-        .bind(&monday)
-        .fetch_optional(&self.pool)
-        .await?
-        .map(|r| (r.get::<String, _>("username"), r.get::<i64, _>("total")));
-
-        let top_activity = sqlx::query(
-            "SELECT activity, SUM(minutes) as total FROM sessions
-             WHERE ended_at IS NOT NULL AND started_at >= $1
-             GROUP BY activity ORDER BY total DESC LIMIT 1",
-        )
-        .bind(&monday)
-        .fetch_optional(&self.pool)
-        .await?
-        .map(|r| (r.get::<String, _>("activity"), r.get::<i64, _>("total")));
-
-        let longest_session = sqlx::query(
-            "SELECT username, activity, minutes FROM sessions
-             WHERE ended_at IS NOT NULL AND started_at >= $1
-             ORDER BY minutes DESC LIMIT 1",
-        )
-        .bind(&monday)
-        .fetch_optional(&self.pool)
-        .await?
-        .map(|r| {
-            (
-                r.get::<String, _>("username"),
-                r.get::<String, _>("activity"),
-                r.get::<i64, _>("minutes"),
+                params![monday],
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
-        });
+            .ok();
 
-        let breakdown_rows = sqlx::query(
-            "SELECT MAX(username) as username, activity, SUM(minutes) as total
-             FROM sessions WHERE ended_at IS NOT NULL AND started_at >= $1
+        // Most popular activity
+        let top_activity: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT activity, SUM(minutes) as total FROM sessions
+             WHERE ended_at IS NOT NULL AND started_at >= ?1
+             GROUP BY activity ORDER BY total DESC LIMIT 1",
+                params![monday],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+
+        // Longest single session
+        let longest_session: Option<(String, String, i64)> = conn
+            .query_row(
+                "SELECT username, activity, minutes FROM sessions
+             WHERE ended_at IS NOT NULL AND started_at >= ?1
+             ORDER BY minutes DESC LIMIT 1",
+                params![monday],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok();
+
+        // Per-person breakdown
+        let mut stmt = conn.prepare(
+            "SELECT username, activity, SUM(minutes) as total
+             FROM sessions WHERE ended_at IS NOT NULL AND started_at >= ?1
              GROUP BY user_id, activity ORDER BY username ASC, total DESC",
-        )
-        .bind(&monday)
-        .fetch_all(&self.pool)
-        .await?;
-        let breakdown: Vec<ActivityEntry> = breakdown_rows
-            .iter()
-            .map(|r| ActivityEntry {
-                username: r.get("username"),
-                activity: r.get("activity"),
-                total_minutes: r.get("total"),
+        )?;
+        let rows = stmt.query_map(params![monday], |r| {
+            Ok(ActivityEntry {
+                username: r.get(0)?,
+                activity: r.get(1)?,
+                total_minutes: r.get(2)?,
                 session_count: 0,
             })
-            .collect();
+        })?;
+        let breakdown: Vec<ActivityEntry> = rows.filter_map(|r| r.ok()).collect();
 
         Ok(WeeklySummary {
-            total_minutes,
+            total_minutes: total_min,
             total_sessions,
             unique_workers,
             mvp,
@@ -436,405 +374,359 @@ impl Db {
         })
     }
 
-    pub async fn who_is_working(&self) -> anyhow::Result<Vec<ActiveSession>> {
-        let rows = sqlx::query(
-            "SELECT id, user_id, username, activity, started_at FROM sessions WHERE ended_at IS NULL",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| {
-                let started_str: String = r.get("started_at");
-                ActiveSession {
-                    id: r.get("id"),
-                    user_id: r.get("user_id"),
-                    username: r.get("username"),
-                    activity: r.get("activity"),
-                    started_at: NaiveDateTime::parse_from_str(&started_str, "%Y-%m-%d %H:%M:%S")
-                        .unwrap(),
-                }
+    pub fn who_is_working(&self) -> anyhow::Result<Vec<ActiveSession>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id,user_id,username,activity,started_at FROM sessions WHERE ended_at IS NULL",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ActiveSession {
+                id: r.get(0)?,
+                user_id: r.get(1)?,
+                username: r.get(2)?,
+                activity: r.get(3)?,
+                started_at: NaiveDateTime::parse_from_str(
+                    &r.get::<_, String>(4)?,
+                    "%Y-%m-%d %H:%M:%S",
+                )
+                .unwrap(),
             })
-            .collect())
-    }
-
-    pub async fn user_activity_breakdown_weekly(&self) -> anyhow::Result<Vec<UserActivityEntry>> {
-        let monday = monday_of_current_week();
-        let rows = sqlx::query(
-            "SELECT user_id, MAX(username) as username, activity, SUM(minutes) as total
-             FROM sessions
-             WHERE ended_at IS NOT NULL AND started_at >= $1
-             GROUP BY user_id, activity
-             ORDER BY user_id ASC, total DESC",
-        )
-        .bind(&monday)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| UserActivityEntry {
-                user_id: r.get("user_id"),
-                username: r.get("username"),
-                activity: r.get("activity"),
-                total_minutes: r.get("total"),
-            })
-            .collect())
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     /// Normalize all activity names in `sessions` and `activity_archive` tables.
-    pub async fn normalize_activities(&self) -> anyhow::Result<()> {
-        let already_normalized = sqlx::query("SELECT value FROM metadata WHERE key = $1")
-            .bind("activities_normalized")
-            .fetch_optional(&self.pool)
-            .await?
-            .map(|r| r.get::<String, _>("value") == "true")
+    /// Call once on startup to clean up historical data.
+    /// Uses a version flag to run only once.
+    pub fn normalize_activities(&self) -> anyhow::Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+
+        // Check if normalization has already been run
+        let already_normalized: bool = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'activities_normalized'",
+                [],
+                |r| {
+                    let val: String = r.get(0)?;
+                    Ok(val == "true")
+                },
+            )
             .unwrap_or(false);
 
         if already_normalized {
             return Ok(());
         }
 
-        let rows = sqlx::query("SELECT DISTINCT activity FROM sessions")
-            .fetch_all(&self.pool)
-            .await?;
-        for row in &rows {
-            let original: String = row.get("activity");
+        // Use rusqlite transaction for proper RAII and rollback semantics
+        let tx = conn.transaction()?;
+
+        // Step 1: Normalize activities in sessions table
+        let mut stmt = tx.prepare("SELECT DISTINCT activity FROM sessions")?;
+        let activities: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        for original in activities {
             let normalized = crate::normalize::normalize_activity(&original);
             if normalized != original {
-                sqlx::query("UPDATE sessions SET activity = $1 WHERE activity = $2")
-                    .bind(&normalized)
-                    .bind(&original)
-                    .execute(&self.pool)
-                    .await?;
+                tx.execute(
+                    "UPDATE sessions SET activity = ?1 WHERE activity = ?2",
+                    params![normalized, original],
+                )?;
             }
         }
 
-        let rows = sqlx::query("SELECT DISTINCT activity FROM activity_archive")
-            .fetch_all(&self.pool)
-            .await?;
-        for row in &rows {
-            let original: String = row.get("activity");
+        // Step 2: Normalize activities in activity_archive table
+        let mut stmt = tx.prepare("SELECT DISTINCT activity FROM activity_archive")?;
+        let activities: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        for original in activities {
             let normalized = crate::normalize::normalize_activity(&original);
             if normalized != original {
-                sqlx::query("UPDATE activity_archive SET activity = $1 WHERE activity = $2")
-                    .bind(&normalized)
-                    .bind(&original)
-                    .execute(&self.pool)
-                    .await?;
+                tx.execute(
+                    "UPDATE activity_archive SET activity = ?1 WHERE activity = ?2",
+                    params![normalized, original],
+                )?;
             }
         }
 
-        let dupes = sqlx::query(
+        // Step 3: Merge duplicate rows in activity_archive that now have the same (user_id, week_label, activity)
+        // Find groups with duplicates
+        let mut stmt = tx.prepare(
             "SELECT user_id, week_label, activity, COUNT(*) as cnt
              FROM activity_archive
              GROUP BY user_id, week_label, activity
-             HAVING COUNT(*) > 1",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+             HAVING cnt > 1",
+        )?;
+        let duplicates: Vec<(String, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
 
-        for dupe in &dupes {
-            let user_id: String = dupe.get("user_id");
-            let week_label: String = dupe.get("week_label");
-            let activity: String = dupe.get("activity");
+        // Prepare statements once for all duplicate groups
+        let mut select_stmt = tx.prepare(
+            "SELECT id, total_min FROM activity_archive
+             WHERE user_id = ?1 AND week_label = ?2 AND activity = ?3
+             ORDER BY id ASC",
+        )?;
+        let mut update_stmt = tx.prepare(
+            "UPDATE activity_archive SET total_min = ?1 WHERE id = ?2"
+        )?;
+        let mut delete_stmt = tx.prepare(
+            "DELETE FROM activity_archive WHERE id = ?1"
+        )?;
 
-            let group = sqlx::query(
-                "SELECT id, total_min FROM activity_archive
-                 WHERE user_id = $1 AND week_label = $2 AND activity = $3
-                 ORDER BY id ASC",
-            )
-            .bind(&user_id)
-            .bind(&week_label)
-            .bind(&activity)
-            .fetch_all(&self.pool)
-            .await?;
+        // For each duplicate group, keep the row with MIN(id), sum total_min into it, delete rest
+        for (user_id, week_label, activity) in duplicates {
+            // Get all ids and total_min for this group
+            let rows: Vec<(i64, i64)> = select_stmt
+                .query_map(params![&user_id, &week_label, &activity], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
 
-            if group.len() > 1 {
-                let keep_id: i64 = group[0].get("id");
-                let total_sum: i64 = group.iter().map(|r| r.get::<i64, _>("total_min")).sum();
+            if rows.len() > 1 {
+                let keep_id = rows[0].0;
+                let total_sum: i64 = rows.iter().map(|(_, mins)| mins).sum();
 
-                sqlx::query("UPDATE activity_archive SET total_min = $1 WHERE id = $2")
-                    .bind(total_sum)
-                    .bind(keep_id)
-                    .execute(&self.pool)
-                    .await?;
+                // Update the kept row with the sum
+                update_stmt.execute(params![total_sum, keep_id])?;
 
-                for row in group.iter().skip(1) {
-                    let id: i64 = row.get("id");
-                    sqlx::query("DELETE FROM activity_archive WHERE id = $1")
-                        .bind(id)
-                        .execute(&self.pool)
-                        .await?;
+                // Delete the duplicate rows
+                for (id, _) in rows.iter().skip(1) {
+                    delete_stmt.execute(params![id])?;
                 }
             }
         }
 
-        sqlx::query("DELETE FROM metadata WHERE key = $1")
-            .bind("activities_normalized")
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("INSERT INTO metadata (key, value) VALUES ($1, $2)")
-            .bind("activities_normalized")
-            .bind("true")
-            .execute(&self.pool)
-            .await?;
+        drop(select_stmt);
+        drop(update_stmt);
+        drop(delete_stmt);
+
+        // Mark normalization as complete
+        tx.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('activities_normalized', 'true')",
+            [],
+        )?;
+
+        // Commit transaction
+        tx.commit()?;
 
         Ok(())
     }
 
-    pub async fn rename_activity(
-        &self,
-        user_id: &str,
-        old_activity: &str,
-        new_activity: &str,
-    ) -> anyhow::Result<(u64, u64)> {
-        let has_sessions: i64 = sqlx::query(
-            "SELECT COUNT(*) as cnt FROM sessions WHERE user_id = $1 AND activity = $2",
-        )
-        .bind(user_id)
-        .bind(old_activity)
-        .fetch_one(&self.pool)
-        .await?
-        .get("cnt");
+    /// Rename all of a user's sessions with `old_activity` to `new_activity`.
+    /// In `sessions`: UPDATE activity for all rows matching (user_id, old_activity).
+    /// In `activity_archive`: UPDATE activity, then merge any resulting duplicates
+    /// by summing total_min for the same (user_id, week_label, new_activity).
+    /// Returns (sessions_updated, archive_rows_merged) counts.
+    pub fn rename_activity(&self, user_id: &str, old_activity: &str, new_activity: &str) -> anyhow::Result<(usize, usize)> {
+        let mut conn = self.conn.lock().unwrap();
 
-        let has_archive: i64 = sqlx::query(
-            "SELECT COUNT(*) as cnt FROM activity_archive WHERE user_id = $1 AND activity = $2",
-        )
-        .bind(user_id)
-        .bind(old_activity)
-        .fetch_one(&self.pool)
-        .await?
-        .get("cnt");
+        // Check that the user actually has sessions or archive entries with old_activity
+        let has_sessions: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sessions WHERE user_id = ?1 AND activity = ?2",
+            params![user_id, old_activity],
+            |r| r.get(0),
+        )?;
 
-        if has_sessions == 0 && has_archive == 0 {
+        let has_archive: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM activity_archive WHERE user_id = ?1 AND activity = ?2",
+            params![user_id, old_activity],
+            |r| r.get(0),
+        )?;
+
+        if !has_sessions && !has_archive {
             anyhow::bail!("no sessions found with that activity");
         }
 
-        let sessions_result =
-            sqlx::query("UPDATE sessions SET activity = $1 WHERE user_id = $2 AND activity = $3")
-                .bind(new_activity)
-                .bind(user_id)
-                .bind(old_activity)
-                .execute(&self.pool)
-                .await?;
-        let sessions_updated = sessions_result.rows_affected();
+        // Start transaction
+        let tx = conn.transaction()?;
 
-        sqlx::query(
-            "UPDATE activity_archive SET activity = $1 WHERE user_id = $2 AND activity = $3",
-        )
-        .bind(new_activity)
-        .bind(user_id)
-        .bind(old_activity)
-        .execute(&self.pool)
-        .await?;
+        // Update sessions table
+        let sessions_updated = tx.execute(
+            "UPDATE sessions SET activity = ?1 WHERE user_id = ?2 AND activity = ?3",
+            params![new_activity, user_id, old_activity],
+        )?;
 
-        let dupes = sqlx::query(
+        // Update activity_archive table
+        tx.execute(
+            "UPDATE activity_archive SET activity = ?1 WHERE user_id = ?2 AND activity = ?3",
+            params![new_activity, user_id, old_activity],
+        )?;
+
+        // Merge duplicate archive rows for this user
+        // Find groups with duplicates after the rename
+        let mut stmt = tx.prepare(
             "SELECT user_id, week_label, activity, COUNT(*) as cnt
              FROM activity_archive
-             WHERE user_id = $1 AND activity = $2
+             WHERE user_id = ?1 AND activity = ?2
              GROUP BY user_id, week_label, activity
-             HAVING COUNT(*) > 1",
-        )
-        .bind(user_id)
-        .bind(new_activity)
-        .fetch_all(&self.pool)
-        .await?;
+             HAVING cnt > 1",
+        )?;
+        let duplicates: Vec<(String, String, String)> = stmt
+            .query_map(params![user_id, new_activity], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
 
-        let mut archive_rows_merged: u64 = 0;
+        let mut archive_rows_merged = 0;
 
-        for dupe in &dupes {
-            let uid: String = dupe.get("user_id");
-            let week_label: String = dupe.get("week_label");
-            let activity: String = dupe.get("activity");
+        // Prepare statements for merging duplicates
+        let mut select_stmt = tx.prepare(
+            "SELECT id, total_min FROM activity_archive
+             WHERE user_id = ?1 AND week_label = ?2 AND activity = ?3
+             ORDER BY id ASC",
+        )?;
+        let mut update_stmt = tx.prepare(
+            "UPDATE activity_archive SET total_min = ?1 WHERE id = ?2"
+        )?;
+        let mut delete_stmt = tx.prepare(
+            "DELETE FROM activity_archive WHERE id = ?1"
+        )?;
 
-            let group = sqlx::query(
-                "SELECT id, total_min FROM activity_archive
-                 WHERE user_id = $1 AND week_label = $2 AND activity = $3
-                 ORDER BY id ASC",
-            )
-            .bind(&uid)
-            .bind(&week_label)
-            .bind(&activity)
-            .fetch_all(&self.pool)
-            .await?;
+        // For each duplicate group, keep the row with MIN(id), sum total_min into it, delete rest
+        for (uid, week_label, activity) in duplicates {
+            let rows: Vec<(i64, i64)> = select_stmt
+                .query_map(params![&uid, &week_label, &activity], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
 
-            if group.len() > 1 {
-                let keep_id: i64 = group[0].get("id");
-                let total_sum: i64 = group.iter().map(|r| r.get::<i64, _>("total_min")).sum();
+            if rows.len() > 1 {
+                let keep_id = rows[0].0;
+                let total_sum: i64 = rows.iter().map(|(_, mins)| mins).sum();
 
-                sqlx::query("UPDATE activity_archive SET total_min = $1 WHERE id = $2")
-                    .bind(total_sum)
-                    .bind(keep_id)
-                    .execute(&self.pool)
-                    .await?;
+                // Update the kept row with the sum
+                update_stmt.execute(params![total_sum, keep_id])?;
 
-                for row in group.iter().skip(1) {
-                    let id: i64 = row.get("id");
-                    sqlx::query("DELETE FROM activity_archive WHERE id = $1")
-                        .bind(id)
-                        .execute(&self.pool)
-                        .await?;
+                // Delete the duplicate rows
+                for (id, _) in rows.iter().skip(1) {
+                    delete_stmt.execute(params![id])?;
                     archive_rows_merged += 1;
                 }
             }
         }
 
+        drop(select_stmt);
+        drop(update_stmt);
+        drop(delete_stmt);
+
+        // Commit transaction
+        tx.commit()?;
+
         Ok((sessions_updated, archive_rows_merged))
     }
 
-    // ── Alias methods ──────────────────────────────────────────
-
-    pub async fn get_user_alias(
-        &self,
-        user_id: &str,
-        keyword: &str,
-    ) -> anyhow::Result<Option<String>> {
-        let row =
-            sqlx::query("SELECT activity FROM user_aliases WHERE user_id = $1 AND keyword = $2")
-                .bind(user_id)
-                .bind(keyword)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.map(|r| r.get("activity")))
-    }
-
-    pub async fn set_user_alias(
-        &self,
-        user_id: &str,
-        keyword: &str,
-        activity: &str,
-    ) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM user_aliases WHERE user_id = $1 AND keyword = $2")
-            .bind(user_id)
-            .bind(keyword)
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("INSERT INTO user_aliases (user_id, keyword, activity) VALUES ($1, $2, $3)")
-            .bind(user_id)
-            .bind(keyword)
-            .bind(activity)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    pub async fn delete_user_alias(&self, user_id: &str, keyword: &str) -> anyhow::Result<bool> {
-        let result = sqlx::query("DELETE FROM user_aliases WHERE user_id = $1 AND keyword = $2")
-            .bind(user_id)
-            .bind(keyword)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn list_user_aliases(&self, user_id: &str) -> anyhow::Result<Vec<(String, String)>> {
-        let rows = sqlx::query(
-            "SELECT keyword, activity FROM user_aliases WHERE user_id = $1 ORDER BY keyword",
-        )
-        .bind(user_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| (r.get("keyword"), r.get("activity")))
-            .collect())
-    }
-
-    pub async fn get_global_alias(&self, keyword: &str) -> anyhow::Result<Option<String>> {
-        let row = sqlx::query("SELECT activity FROM global_aliases WHERE keyword = $1")
-            .bind(keyword)
-            .fetch_optional(&self.pool)
-            .await?;
-        Ok(row.map(|r| r.get("activity")))
-    }
-
-    pub async fn set_global_alias(&self, keyword: &str, activity: &str) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM global_aliases WHERE keyword = $1")
-            .bind(keyword)
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("INSERT INTO global_aliases (keyword, activity) VALUES ($1, $2)")
-            .bind(keyword)
-            .bind(activity)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    pub async fn delete_global_alias(&self, keyword: &str) -> anyhow::Result<bool> {
-        let result = sqlx::query("DELETE FROM global_aliases WHERE keyword = $1")
-            .bind(keyword)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn list_global_aliases(&self) -> anyhow::Result<Vec<(String, String)>> {
-        let rows = sqlx::query("SELECT keyword, activity FROM global_aliases ORDER BY keyword")
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows
-            .iter()
-            .map(|r| (r.get("keyword"), r.get("activity")))
-            .collect())
-    }
-
-    pub async fn resolve_alias(&self, user_id: &str, input: &str) -> anyhow::Result<String> {
-        if let Some(activity) = self.get_user_alias(user_id, input).await? {
-            return Ok(activity);
+    /// Return per-user weekly minutes for the last `weeks` weeks, capped to the top 5 users
+    /// by total minutes in that window.  Week labels are in chronological order (oldest first).
+    pub fn weekly_hours_for_chart(&self, weeks: u32) -> anyhow::Result<ChartData> {
+        if weeks == 0 {
+            anyhow::bail!("weeks must be at least 1");
         }
-        if let Some(activity) = self.get_global_alias(input).await? {
-            return Ok(activity);
-        }
-        Ok(input.to_string())
-    }
 
-    pub async fn recent_activities(
-        &self,
-        user_id: &str,
-        limit: usize,
-    ) -> anyhow::Result<Vec<String>> {
-        let sessions_rows = sqlx::query(
-            "SELECT DISTINCT activity, MAX(started_at) as last_used
-             FROM sessions WHERE user_id = $1
-             GROUP BY activity
-             ORDER BY last_used DESC",
-        )
-        .bind(user_id)
-        .fetch_all(&self.pool)
-        .await?;
+        let week_labels = generate_week_labels(weeks);
+        let current_week_label = swiss_week_label();
+        let monday = monday_of_current_week();
+        let conn = self.conn.lock().unwrap();
 
-        let mut activities: Vec<(String, String)> = sessions_rows
+        // user_id -> (username, week_label -> minutes)
+        let mut user_data: HashMap<String, (String, HashMap<String, i64>)> = HashMap::new();
+
+        // ── Past weeks: pull from weekly_archive ──────────────────────────
+        let past_labels: Vec<&str> = week_labels
             .iter()
-            .map(|r| {
-                (
-                    r.get::<String, _>("activity"),
-                    r.get::<String, _>("last_used"),
-                )
-            })
+            .filter(|wl| wl.as_str() != current_week_label.as_str())
+            .map(String::as_str)
             .collect();
 
-        let archive_rows = sqlx::query(
-            "SELECT DISTINCT activity, MAX(week_label) as last_week
-             FROM activity_archive WHERE user_id = $1
-             GROUP BY activity
-             ORDER BY last_week DESC",
-        )
-        .bind(user_id)
-        .fetch_all(&self.pool)
-        .await?;
-
-        for row in &archive_rows {
-            let activity: String = row.get("activity");
-            let week: String = row.get("last_week");
-            if !activities.iter().any(|(a, _)| a == &activity) {
-                activities.push((activity, format!("archive-{}", week)));
+        if !past_labels.is_empty() {
+            let placeholders = past_labels.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT user_id, username, week_label, SUM(total_min) as total \
+                 FROM weekly_archive WHERE week_label IN ({}) \
+                 GROUP BY user_id, week_label",
+                placeholders
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(past_labels.iter()), |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            })?;
+            for row in rows.filter_map(|r| r.ok()) {
+                let (uid, username, week_label, minutes) = row;
+                let entry = user_data
+                    .entry(uid)
+                    .or_insert_with(|| (username, HashMap::new()));
+                *entry.1.entry(week_label).or_insert(0) += minutes;
             }
         }
 
-        activities.sort_by(|a, b| b.1.cmp(&a.1));
+        // ── Current week: pull from sessions ──────────────────────────────
+        let mut stmt = conn.prepare(
+            "SELECT user_id, username, SUM(minutes) as total FROM sessions \
+             WHERE ended_at IS NOT NULL AND started_at >= ?1 \
+             GROUP BY user_id",
+        )?;
+        let rows = stmt.query_map(params![monday], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        for row in rows.filter_map(|r| r.ok()) {
+            let (uid, username, minutes) = row;
+            let entry = user_data
+                .entry(uid)
+                .or_insert_with(|| (username, HashMap::new()));
+            *entry.1.entry(current_week_label.clone()).or_insert(0) += minutes;
+        }
 
-        Ok(activities.into_iter().take(limit).map(|(a, _)| a).collect())
+        // ── Find top 5 by total minutes in the window ─────────────────────
+        let mut user_totals: Vec<(String, String, i64)> = user_data
+            .iter()
+            .map(|(uid, (name, weeks_map))| {
+                let total: i64 = weeks_map.values().sum();
+                (uid.clone(), name.clone(), total)
+            })
+            .collect();
+        user_totals.sort_by(|a, b| b.2.cmp(&a.2));
+        user_totals.truncate(5);
+
+        // ── Build ordered output ───────────────────────────────────────────
+        let users: Vec<UserWeeklyData> = user_totals
+            .into_iter()
+            .map(|(uid, username, _)| {
+                let weeks_map = user_data
+                    .remove(&uid)
+                    .map(|(_, m)| m)
+                    .unwrap_or_default();
+                let minutes_per_week = week_labels
+                    .iter()
+                    .map(|wl| *weeks_map.get(wl).unwrap_or(&0))
+                    .collect();
+                UserWeeklyData {
+                    username,
+                    minutes_per_week,
+                }
+            })
+            .collect();
+
+        Ok(ChartData { week_labels, users })
     }
 
     // ── Archive query methods (for startup role assignment) ─────
@@ -950,149 +842,239 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+    use tempfile::TempDir;
 
-    async fn setup_test_db() -> Db {
-        let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let url = format!("sqlite:file:test{}?mode=memory&cache=shared", id);
-        Db::open(&url).await.unwrap()
+    fn setup_test_db() -> (Db, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = Db::open(&db_path).unwrap();
+        (db, temp_dir)
     }
 
-    #[tokio::test]
-    async fn test_rename_activity_basic() {
-        let db = setup_test_db().await;
+    #[test]
+    fn test_rename_activity_basic() {
+        let (db, _temp_dir) = setup_test_db();
         let user_id = "user123";
         let username = "TestUser";
 
-        db.clock_in(user_id, username, "boring work").await.unwrap();
-        let session = db.active_session(user_id).await.unwrap().unwrap();
+        // Clock in and out for "boring work"
+        db.clock_in(user_id, username, "boring work").unwrap();
+        let session = db.active_session(user_id).unwrap().unwrap();
         assert_eq!(session.activity, "boring work");
+        
+        // Clock out
+        db.clock_out(user_id).unwrap();
 
-        db.clock_out(user_id).await.unwrap();
-
-        let (sessions_updated, archive_merged) = db
-            .rename_activity(user_id, "boring work", "work")
-            .await
-            .unwrap();
+        // Rename "boring work" to "work"
+        let (sessions_updated, archive_merged) = db.rename_activity(user_id, "boring work", "work").unwrap();
         assert_eq!(sessions_updated, 1);
         assert_eq!(archive_merged, 0);
 
-        let row = sqlx::query("SELECT activity FROM sessions WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(&db.pool)
-            .await
+        // Verify the rename worked
+        let conn = db.conn.lock().unwrap();
+        let activity: String = conn
+            .query_row(
+                "SELECT activity FROM sessions WHERE user_id = ?1",
+                params![user_id],
+                |r| r.get(0),
+            )
             .unwrap();
-        let activity: String = row.get("activity");
         assert_eq!(activity, "work");
     }
 
-    #[tokio::test]
-    async fn test_rename_activity_not_found() {
-        let db = setup_test_db().await;
+    #[test]
+    fn test_rename_activity_not_found() {
+        let (db, _temp_dir) = setup_test_db();
         let user_id = "user123";
 
-        let result = db.rename_activity(user_id, "nonexistent", "work").await;
+        // Try to rename a non-existent activity
+        let result = db.rename_activity(user_id, "nonexistent", "work");
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "no sessions found with that activity"
-        );
+        assert_eq!(result.unwrap_err().to_string(), "no sessions found with that activity");
     }
 
-    #[tokio::test]
-    async fn test_rename_activity_merge_archives() {
-        let db = setup_test_db().await;
+    #[test]
+    fn test_rename_activity_merge_archives() {
+        let (db, _temp_dir) = setup_test_db();
         let user_id = "user123";
         let username = "TestUser";
         let week_label = "KW07/2026";
 
-        sqlx::query(
-            "INSERT INTO activity_archive (user_id, username, week_label, activity, total_min) VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(user_id).bind(username).bind(week_label).bind("work").bind(60i64)
-        .execute(&db.pool).await.unwrap();
+        // Manually insert archive entries for the same user and week but different activities
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO activity_archive (user_id, username, week_label, activity, total_min) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![user_id, username, week_label, "work", 60],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO activity_archive (user_id, username, week_label, activity, total_min) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![user_id, username, week_label, "boring work", 30],
+            ).unwrap();
+        }
 
-        sqlx::query(
-            "INSERT INTO activity_archive (user_id, username, week_label, activity, total_min) VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(user_id).bind(username).bind(week_label).bind("boring work").bind(30i64)
-        .execute(&db.pool).await.unwrap();
+        // Rename "boring work" to "work" - should merge the archives
+        let (sessions_updated, archive_merged) = db.rename_activity(user_id, "boring work", "work").unwrap();
+        assert_eq!(sessions_updated, 0); // No sessions to update
+        assert_eq!(archive_merged, 1); // One duplicate row merged
 
-        let (sessions_updated, archive_merged) = db
-            .rename_activity(user_id, "boring work", "work")
-            .await
+        // Verify the archives were merged
+        let conn = db.conn.lock().unwrap();
+        let total_min: i64 = conn
+            .query_row(
+                "SELECT total_min FROM activity_archive WHERE user_id = ?1 AND week_label = ?2 AND activity = ?3",
+                params![user_id, week_label, "work"],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(sessions_updated, 0);
-        assert_eq!(archive_merged, 1);
+        assert_eq!(total_min, 90); // 60 + 30
 
-        let row = sqlx::query(
-            "SELECT total_min FROM activity_archive WHERE user_id = $1 AND week_label = $2 AND activity = $3",
-        )
-        .bind(user_id).bind(week_label).bind("work")
-        .fetch_one(&db.pool).await.unwrap();
-        let total_min: i64 = row.get("total_min");
-        assert_eq!(total_min, 90);
-
-        let row = sqlx::query(
-            "SELECT COUNT(*) as cnt FROM activity_archive WHERE user_id = $1 AND week_label = $2 AND activity = $3",
-        )
-        .bind(user_id).bind(week_label).bind("work")
-        .fetch_one(&db.pool).await.unwrap();
-        let count: i64 = row.get("cnt");
+        // Verify only one row exists for this user/week/activity
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM activity_archive WHERE user_id = ?1 AND week_label = ?2 AND activity = ?3",
+                params![user_id, week_label, "work"],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1);
     }
 
-    #[tokio::test]
-    async fn test_rename_activity_active_session() {
-        let db = setup_test_db().await;
+    #[test]
+    fn test_rename_activity_active_session() {
+        let (db, _temp_dir) = setup_test_db();
         let user_id = "user123";
         let username = "TestUser";
 
-        db.clock_in(user_id, username, "boring work").await.unwrap();
-
-        let (sessions_updated, _) = db
-            .rename_activity(user_id, "boring work", "work")
-            .await
-            .unwrap();
+        // Clock in to "boring work"
+        db.clock_in(user_id, username, "boring work").unwrap();
+        
+        // Rename while still clocked in
+        let (sessions_updated, _) = db.rename_activity(user_id, "boring work", "work").unwrap();
         assert_eq!(sessions_updated, 1);
 
-        let session = db.active_session(user_id).await.unwrap().unwrap();
+        // Verify the active session was renamed
+        let session = db.active_session(user_id).unwrap().unwrap();
         assert_eq!(session.activity, "work");
     }
 
-    #[tokio::test]
-    async fn test_rename_activity_per_user() {
-        let db = setup_test_db().await;
+    #[test]
+    fn test_rename_activity_per_user() {
+        let (db, _temp_dir) = setup_test_db();
         let user1 = "user123";
         let user2 = "user456";
         let username1 = "User1";
         let username2 = "User2";
 
-        db.clock_in(user1, username1, "boring work").await.unwrap();
-        db.clock_out(user1).await.unwrap();
+        // Both users have "boring work" sessions
+        db.clock_in(user1, username1, "boring work").unwrap();
+        db.clock_out(user1).unwrap();
+        
+        db.clock_in(user2, username2, "boring work").unwrap();
+        db.clock_out(user2).unwrap();
 
-        db.clock_in(user2, username2, "boring work").await.unwrap();
-        db.clock_out(user2).await.unwrap();
-
-        let (sessions_updated, _) = db
-            .rename_activity(user1, "boring work", "work")
-            .await
-            .unwrap();
+        // User1 renames their activity
+        let (sessions_updated, _) = db.rename_activity(user1, "boring work", "work").unwrap();
         assert_eq!(sessions_updated, 1);
 
-        let row = sqlx::query("SELECT activity FROM sessions WHERE user_id = $1")
-            .bind(user1)
-            .fetch_one(&db.pool)
-            .await
+        // Verify user1's activity was renamed but user2's wasn't
+        let conn = db.conn.lock().unwrap();
+        let user1_activity: String = conn
+            .query_row(
+                "SELECT activity FROM sessions WHERE user_id = ?1",
+                params![user1],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(row.get::<String, _>("activity"), "work");
+        assert_eq!(user1_activity, "work");
 
-        let row = sqlx::query("SELECT activity FROM sessions WHERE user_id = $1")
-            .bind(user2)
-            .fetch_one(&db.pool)
-            .await
+        let user2_activity: String = conn
+            .query_row(
+                "SELECT activity FROM sessions WHERE user_id = ?1",
+                params![user2],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(row.get::<String, _>("activity"), "boring work");
+        assert_eq!(user2_activity, "boring work");
+    }
+
+    #[test]
+    fn test_weekly_hours_for_chart_empty() {
+        let (db, _temp_dir) = setup_test_db();
+        // No data at all → returns empty users list (no error)
+        let chart = db.weekly_hours_for_chart(4).unwrap();
+        assert_eq!(chart.week_labels.len(), 4);
+        assert!(chart.users.is_empty());
+    }
+
+    #[test]
+    fn test_weekly_hours_for_chart_archive_data() {
+        let (db, _temp_dir) = setup_test_db();
+
+        // Insert archive rows for two past weeks and two users.
+        let week_labels = generate_week_labels(4);
+        // Use the oldest two weeks (index 0 and 1) for past data.
+        let week_a = &week_labels[0];
+        let week_b = &week_labels[1];
+
+        {
+            let conn = db.conn.lock().unwrap();
+            // User A: 120 min in week_a, 60 min in week_b  → total 180
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["a", "Alice", week_a, 120i64],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["a", "Alice", week_b, 60i64],
+            ).unwrap();
+            // User B: 90 min in week_a only → total 90
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["b", "Bob", week_a, 90i64],
+            ).unwrap();
+        }
+
+        let chart = db.weekly_hours_for_chart(4).unwrap();
+        assert_eq!(chart.week_labels.len(), 4);
+        // Both users should appear; Alice first (higher total).
+        assert_eq!(chart.users.len(), 2);
+        assert_eq!(chart.users[0].username, "Alice");
+        assert_eq!(chart.users[1].username, "Bob");
+
+        // Alice's minutes for week_a and week_b should be correct.
+        let alice_idx_a = chart.week_labels.iter().position(|l| l == week_a).unwrap();
+        let alice_idx_b = chart.week_labels.iter().position(|l| l == week_b).unwrap();
+        assert_eq!(chart.users[0].minutes_per_week[alice_idx_a], 120);
+        assert_eq!(chart.users[0].minutes_per_week[alice_idx_b], 60);
+
+        // Bob's minutes for week_a should be 90, week_b should be 0.
+        assert_eq!(chart.users[1].minutes_per_week[alice_idx_a], 90);
+        assert_eq!(chart.users[1].minutes_per_week[alice_idx_b], 0);
+    }
+
+    #[test]
+    fn test_weekly_hours_for_chart_top5_cap() {
+        let (db, _temp_dir) = setup_test_db();
+
+        let week_labels = generate_week_labels(2);
+        let week_a = &week_labels[0];
+
+        {
+            let conn = db.conn.lock().unwrap();
+            // Insert 6 users with distinct totals.
+            for i in 1u32..=6 {
+                conn.execute(
+                    "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                    params![format!("u{}", i), format!("User{}", i), week_a, (i * 10) as i64],
+                ).unwrap();
+            }
+        }
+
+        let chart = db.weekly_hours_for_chart(2).unwrap();
+        // Must be capped at 5 users.
+        assert_eq!(chart.users.len(), 5);
+        // Top user should be User6 (60 min).
+        assert_eq!(chart.users[0].username, "User6");
     }
 }
