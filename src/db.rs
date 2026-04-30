@@ -1,6 +1,6 @@
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Utc};
 use chrono_tz::Europe::Zurich;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -41,6 +41,14 @@ pub struct WeeklySummary {
     pub top_activity: Option<(String, i64)>,
     pub longest_session: Option<(String, String, i64)>,
     pub breakdown: Vec<ActivityEntry>,
+}
+
+#[derive(Debug)]
+pub struct UserActivityEntry {
+    pub user_id: String,
+    pub username: String,
+    pub activity: String,
+    pub total_minutes: i64,
 }
 
 #[derive(Debug)]
@@ -476,12 +484,9 @@ impl Db {
              WHERE user_id = ?1 AND week_label = ?2 AND activity = ?3
              ORDER BY id ASC",
         )?;
-        let mut update_stmt = tx.prepare(
-            "UPDATE activity_archive SET total_min = ?1 WHERE id = ?2"
-        )?;
-        let mut delete_stmt = tx.prepare(
-            "DELETE FROM activity_archive WHERE id = ?1"
-        )?;
+        let mut update_stmt =
+            tx.prepare("UPDATE activity_archive SET total_min = ?1 WHERE id = ?2")?;
+        let mut delete_stmt = tx.prepare("DELETE FROM activity_archive WHERE id = ?1")?;
 
         // For each duplicate group, keep the row with MIN(id), sum total_min into it, delete rest
         for (user_id, week_label, activity) in duplicates {
@@ -528,7 +533,12 @@ impl Db {
     /// In `activity_archive`: UPDATE activity, then merge any resulting duplicates
     /// by summing total_min for the same (user_id, week_label, new_activity).
     /// Returns (sessions_updated, archive_rows_merged) counts.
-    pub fn rename_activity(&self, user_id: &str, old_activity: &str, new_activity: &str) -> anyhow::Result<(usize, usize)> {
+    pub fn rename_activity(
+        &self,
+        user_id: &str,
+        old_activity: &str,
+        new_activity: &str,
+    ) -> anyhow::Result<(usize, usize)> {
         let mut conn = self.conn.lock().unwrap();
 
         // Check that the user actually has sessions or archive entries with old_activity
@@ -573,7 +583,9 @@ impl Db {
              HAVING cnt > 1",
         )?;
         let duplicates: Vec<(String, String, String)> = stmt
-            .query_map(params![user_id, new_activity], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .query_map(params![user_id, new_activity], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
             .filter_map(|r| r.ok())
             .collect();
         drop(stmt);
@@ -586,12 +598,9 @@ impl Db {
              WHERE user_id = ?1 AND week_label = ?2 AND activity = ?3
              ORDER BY id ASC",
         )?;
-        let mut update_stmt = tx.prepare(
-            "UPDATE activity_archive SET total_min = ?1 WHERE id = ?2"
-        )?;
-        let mut delete_stmt = tx.prepare(
-            "DELETE FROM activity_archive WHERE id = ?1"
-        )?;
+        let mut update_stmt =
+            tx.prepare("UPDATE activity_archive SET total_min = ?1 WHERE id = ?2")?;
+        let mut delete_stmt = tx.prepare("DELETE FROM activity_archive WHERE id = ?1")?;
 
         // For each duplicate group, keep the row with MIN(id), sum total_min into it, delete rest
         for (uid, week_label, activity) in duplicates {
@@ -650,7 +659,11 @@ impl Db {
             .collect();
 
         if !past_labels.is_empty() {
-            let placeholders = past_labels.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let placeholders = past_labels
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
             let sql = format!(
                 "SELECT user_id, username, week_label, SUM(total_min) as total \
                  FROM weekly_archive WHERE week_label IN ({}) \
@@ -711,10 +724,7 @@ impl Db {
         let users: Vec<UserWeeklyData> = user_totals
             .into_iter()
             .map(|(uid, username, _)| {
-                let weeks_map = user_data
-                    .remove(&uid)
-                    .map(|(_, m)| m)
-                    .unwrap_or_default();
+                let weeks_map = user_data.remove(&uid).map(|(_, m)| m).unwrap_or_default();
                 let minutes_per_week = week_labels
                     .iter()
                     .map(|wl| *weeks_map.get(wl).unwrap_or(&0))
@@ -729,16 +739,44 @@ impl Db {
         Ok(ChartData { week_labels, users })
     }
 
-    // ── Archive query methods (for startup role assignment) ─────
+    // ── Role-assignment query methods ────────────────────────────
+
+    /// Per-user activity breakdown from the live sessions table (current week).
+    pub async fn user_activity_breakdown_weekly(&self) -> anyhow::Result<Vec<UserActivityEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT user_id, username, activity, SUM(minutes) as total
+             FROM sessions
+             WHERE ended_at IS NOT NULL
+               AND started_at >= ?1
+             GROUP BY user_id, activity
+             ORDER BY user_id ASC, total DESC",
+        )?;
+        let rows = stmt
+            .query_map(params![monday_of_current_week()], |r| {
+                Ok(UserActivityEntry {
+                    user_id: r.get(0)?,
+                    username: r.get(1)?,
+                    activity: r.get(2)?,
+                    total_minutes: r.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
 
     /// Get the most recent archived week label.
     pub async fn last_archived_week(&self) -> anyhow::Result<Option<String>> {
-        let row = sqlx::query(
+        let conn = self.conn.lock().unwrap();
+        match conn.query_row(
             "SELECT DISTINCT week_label FROM activity_archive ORDER BY week_label DESC LIMIT 1",
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|r| r.get("week_label")))
+            [],
+            |r| r.get(0),
+        ) {
+            Ok(label) => Ok(Some(label)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Activity breakdown from archive for a specific week.
@@ -746,24 +784,24 @@ impl Db {
         &self,
         week_label: &str,
     ) -> anyhow::Result<Vec<ActivityEntry>> {
-        let rows = sqlx::query(
-            "SELECT username, activity, total_min as total, 0 as sessions
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT username, activity, total_min, 0 as sessions
              FROM activity_archive
-             WHERE week_label = $1
-             ORDER BY username ASC, total DESC",
-        )
-        .bind(week_label)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| ActivityEntry {
-                username: r.get("username"),
-                activity: r.get("activity"),
-                total_minutes: r.get("total"),
-                session_count: r.get("sessions"),
-            })
-            .collect())
+             WHERE week_label = ?1
+             ORDER BY username ASC, total_min DESC",
+        )?;
+        let rows = stmt
+            .query_map(params![week_label], |r| {
+                Ok(ActivityEntry {
+                    username: r.get(0)?,
+                    activity: r.get(1)?,
+                    total_minutes: r.get(2)?,
+                    session_count: r.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Per-user activity breakdown from archive for a specific week.
@@ -771,24 +809,24 @@ impl Db {
         &self,
         week_label: &str,
     ) -> anyhow::Result<Vec<UserActivityEntry>> {
-        let rows = sqlx::query(
-            "SELECT user_id, username, activity, total_min as total
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT user_id, username, activity, total_min
              FROM activity_archive
-             WHERE week_label = $1
-             ORDER BY user_id ASC, total DESC",
-        )
-        .bind(week_label)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| UserActivityEntry {
-                user_id: r.get("user_id"),
-                username: r.get("username"),
-                activity: r.get("activity"),
-                total_minutes: r.get("total"),
-            })
-            .collect())
+             WHERE week_label = ?1
+             ORDER BY user_id ASC, total_min DESC",
+        )?;
+        let rows = stmt
+            .query_map(params![week_label], |r| {
+                Ok(UserActivityEntry {
+                    user_id: r.get(0)?,
+                    username: r.get(1)?,
+                    activity: r.get(2)?,
+                    total_minutes: r.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Total minutes per user from archive for a specific week.
@@ -796,45 +834,43 @@ impl Db {
         &self,
         week_label: &str,
     ) -> anyhow::Result<Vec<(String, i64)>> {
-        let rows = sqlx::query(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT user_id, SUM(total_min) as total
              FROM activity_archive
-             WHERE week_label = $1
+             WHERE week_label = ?1
              GROUP BY user_id",
-        )
-        .bind(week_label)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| (r.get("user_id"), r.get("total")))
-            .collect())
+        )?;
+        let rows = stmt
+            .query_map(params![week_label], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Check if roles were already assigned for a given week.
     pub async fn roles_assigned_for_week(&self, week_label: &str) -> anyhow::Result<bool> {
         let key = format!("roles_assigned_{}", week_label);
-        let row = sqlx::query("SELECT value FROM metadata WHERE key = $1")
-            .bind(&key)
-            .fetch_optional(&self.pool)
-            .await?;
-        Ok(row
-            .map(|r| r.get::<String, _>("value") == "true")
-            .unwrap_or(false))
+        let conn = self.conn.lock().unwrap();
+        match conn.query_row(
+            "SELECT value FROM metadata WHERE key = ?1",
+            params![key],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(val) => Ok(val == "true"),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Mark roles as assigned for a given week.
     pub async fn mark_roles_assigned(&self, week_label: &str) -> anyhow::Result<()> {
         let key = format!("roles_assigned_{}", week_label);
-        sqlx::query("DELETE FROM metadata WHERE key = $1")
-            .bind(&key)
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("INSERT INTO metadata (key, value) VALUES ($1, $2)")
-            .bind(&key)
-            .bind("true")
-            .execute(&self.pool)
-            .await?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM metadata WHERE key = ?1", params![key])?;
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
+            params![key, "true"],
+        )?;
         Ok(())
     }
 }
@@ -861,12 +897,13 @@ mod tests {
         db.clock_in(user_id, username, "boring work").unwrap();
         let session = db.active_session(user_id).unwrap().unwrap();
         assert_eq!(session.activity, "boring work");
-        
+
         // Clock out
         db.clock_out(user_id).unwrap();
 
         // Rename "boring work" to "work"
-        let (sessions_updated, archive_merged) = db.rename_activity(user_id, "boring work", "work").unwrap();
+        let (sessions_updated, archive_merged) =
+            db.rename_activity(user_id, "boring work", "work").unwrap();
         assert_eq!(sessions_updated, 1);
         assert_eq!(archive_merged, 0);
 
@@ -890,7 +927,10 @@ mod tests {
         // Try to rename a non-existent activity
         let result = db.rename_activity(user_id, "nonexistent", "work");
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "no sessions found with that activity");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "no sessions found with that activity"
+        );
     }
 
     #[test]
@@ -914,7 +954,8 @@ mod tests {
         }
 
         // Rename "boring work" to "work" - should merge the archives
-        let (sessions_updated, archive_merged) = db.rename_activity(user_id, "boring work", "work").unwrap();
+        let (sessions_updated, archive_merged) =
+            db.rename_activity(user_id, "boring work", "work").unwrap();
         assert_eq!(sessions_updated, 0); // No sessions to update
         assert_eq!(archive_merged, 1); // One duplicate row merged
 
@@ -948,7 +989,7 @@ mod tests {
 
         // Clock in to "boring work"
         db.clock_in(user_id, username, "boring work").unwrap();
-        
+
         // Rename while still clocked in
         let (sessions_updated, _) = db.rename_activity(user_id, "boring work", "work").unwrap();
         assert_eq!(sessions_updated, 1);
@@ -969,7 +1010,7 @@ mod tests {
         // Both users have "boring work" sessions
         db.clock_in(user1, username1, "boring work").unwrap();
         db.clock_out(user1).unwrap();
-        
+
         db.clock_in(user2, username2, "boring work").unwrap();
         db.clock_out(user2).unwrap();
 

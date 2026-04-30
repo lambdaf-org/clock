@@ -108,14 +108,21 @@ fn format_board(entries: &[LeaderboardEntry]) -> String {
     let medals = ["🥇", "🥈", "🥉"];
     let max_min = entries.iter().map(|e| e.total_minutes).max().unwrap_or(1);
 
-     let max_name_len = entries.iter().map(|e| e.username.len()).max().unwrap_or(8);
+    let max_name_len = entries.iter().map(|e| e.username.len()).max().unwrap_or(8);
 
     let mut out = String::new();
     for (i, e) in entries.iter().enumerate() {
         let medal = if i < 3 { medals[i] } else { "▫️" };
         let bar = make_bar(e.total_minutes, max_min);
         let dur = format_duration(e.total_minutes);
-        out += &format!("{} `{:<width$} {}` {}\n", medal, e.username, bar, dur, width = max_name_len);
+        out += &format!(
+            "{} `{:<width$} {}` {}\n",
+            medal,
+            e.username,
+            bar,
+            dur,
+            width = max_name_len
+        );
     }
     out
 }
@@ -261,7 +268,10 @@ async fn handle_clock_out(ctx: &Context, msg: &Message, db: &Arc<Db>) {
             let embed = CreateEmbed::new()
                 .color(COLOR_RED)
                 .title("🔴 Clocked Out")
-                .description(format!("**{}** finished working on **{}**", username, activity))
+                .description(format!(
+                    "**{}** finished working on **{}**",
+                    username, activity
+                ))
                 .field("Duration", format_duration(minutes), true)
                 .footer(CreateEmbedFooter::new(swiss_timestamp()));
             let _ = msg
@@ -501,7 +511,10 @@ async fn handle_rename(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
                 details.push_str(&format!("✅ {} session(s) updated\n", sessions_updated));
             }
             if archive_rows_merged > 0 {
-                details.push_str(&format!("🔀 {} archive row(s) merged\n", archive_rows_merged));
+                details.push_str(&format!(
+                    "🔀 {} archive row(s) merged\n",
+                    archive_rows_merged
+                ));
             }
             if details.is_empty() {
                 details = "*No changes made*".to_string();
