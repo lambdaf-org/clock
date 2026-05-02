@@ -5,6 +5,7 @@ use std::sync::Arc;
 const HELP: &str = r#"**Commands**
 `/clock in <activity>` — start tracking
 `/clock out` — stop tracking
+`/clock switch <activity>` — switch to new activity
 `/clock status` — your session
 `/clock who` — who's working
 `/clock leaderboard` — weekly + all-time
@@ -48,6 +49,16 @@ pub async fn handle_command(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         }
         let activity = crate::normalize::normalize_activity(activity);
         handle_clock_in(ctx, msg, db, &activity).await;
+    } else if rest.starts_with("switch ") {
+        let activity = rest.strip_prefix("switch ").unwrap().trim();
+        if activity.is_empty() {
+            let _ = msg
+                .reply(&ctx.http, "Switch to what? `/clock switch <activity>`")
+                .await;
+            return;
+        }
+        let activity = crate::normalize::normalize_activity(activity);
+        handle_switch(ctx, msg, db, &activity).await;
     } else if rest == "out" {
         handle_clock_out(ctx, msg, db).await;
     } else if rest == "status" {
@@ -274,6 +285,51 @@ async fn handle_clock_out(ctx: &Context, msg: &Message, db: &Arc<Db>) {
                 .color(COLOR_GRAY)
                 .title("🤷 Not Clocked In")
                 .description("Use `/clock in <activity>` first.");
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+    }
+}
+
+async fn handle_switch(ctx: &Context, msg: &Message, db: &Arc<Db>, activity: &str) {
+    let user_id = msg.author.id.to_string();
+    let username = msg.author.display_name().to_string();
+
+    let session = db.active_session(&user_id).ok().flatten();
+    let was_clocked_in = session.is_some();
+    let prev_activity = session.map(|s| s.activity);
+
+    if was_clocked_in {
+        let _ = db.clock_out(&user_id);
+    }
+
+    match db.clock_in(&user_id, &username, activity) {
+        Ok(()) => {
+            let desc = if let Some(prev) = prev_activity {
+                format!("**{}** switched from **{}** → **{}**", username, prev, activity)
+            } else {
+                format!("**{}** started working on **{}**", username, activity)
+            };
+            let embed = CreateEmbed::new()
+                .color(COLOR_GREEN)
+                .title("🔄 Switched")
+                .description(desc)
+                .footer(CreateEmbedFooter::new(format!(
+                    "{} · /clock out when done",
+                    swiss_timestamp()
+                )));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+        Err(e) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_RED)
+                .title("⚠️ Switch Failed")
+                .description(format!("Error: {}", e));
             let _ = msg
                 .channel_id
                 .send_message(&ctx.http, CreateMessage::new().embed(embed))
