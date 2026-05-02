@@ -1,5 +1,5 @@
-use regex::Regex;
 use once_cell::sync::Lazy;
+use regex::Regex;
 
 static RE_SPACES: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
 static RE_HYPHENS: Lazy<Regex> = Lazy::new(|| Regex::new(r"-+").unwrap());
@@ -24,15 +24,17 @@ pub fn normalize_activity(raw: &str) -> String {
 
     // Step 3: Lowercase and normalize whitespace/hyphens
     let lowercased = hyphenated.to_lowercase();
-    
+
     // Normalize multiple spaces to single space
     let normalized_spaces = RE_SPACES.replace_all(&lowercased, " ");
-    
+
     // Normalize multiple hyphens to single hyphen
     let normalized_hyphens = RE_HYPHENS.replace_all(&normalized_spaces, "-");
-    
+
     // Trim any leading/trailing spaces or hyphens
-    normalized_hyphens.trim_matches(|c| c == ' ' || c == '-').to_string()
+    normalized_hyphens
+        .trim_matches(|c| c == ' ' || c == '-')
+        .to_string()
 }
 
 /// Collapse 3+ consecutive identical characters
@@ -157,8 +159,8 @@ mod tests {
         assert_eq!(normalize_activity("   "), "");
         assert_eq!(normalize_activity("a"), "a");
         assert_eq!(normalize_activity("ab"), "ab");
-        assert_eq!(normalize_activity("aaa"), "aa");  // 3 consecutive → 2
-        assert_eq!(normalize_activity("aabbcc"), "aabbcc");  // all doubles, no change
-        assert_eq!(normalize_activity("aaabbbccc"), "aabbcc");  // 3 of each → 2 of each
+        assert_eq!(normalize_activity("aaa"), "aa"); // 3 consecutive → 2
+        assert_eq!(normalize_activity("aabbcc"), "aabbcc"); // all doubles, no change
+        assert_eq!(normalize_activity("aaabbbccc"), "aabbcc"); // 3 of each → 2 of each
     }
 }
