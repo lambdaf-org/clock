@@ -2,7 +2,7 @@ use crate::db::{self, ActivityEntry, Db, LeaderboardEntry, WeeklySummary};
 use serenity::all::*;
 use std::sync::Arc;
 
-const HELP: &str = r#"**commands**
+const HELP: &str = r#"**Commands**
 `/clock in <activity>` — start tracking
 `/clock out` — stop tracking
 `/clock switch <activity>` — switch to new activity
