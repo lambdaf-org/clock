@@ -106,7 +106,7 @@ fn make_bar(minutes: i64, max_minutes: i64) -> String {
 
 fn format_board(entries: &[LeaderboardEntry]) -> String {
     if entries.is_empty() {
-        return "```\n  no data yet\n```".into();
+        return "```\nno data yet\n```".into();
     }
 
     let max_min = entries.iter().map(|e| e.total_minutes).max().unwrap_or(1);
@@ -767,7 +767,7 @@ async fn handle_alltime(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         .color(COLOR_VIOLET)
         .title("all-time stats")
         .description(format!(
-            "```\n  {} total · {} people\n```",
+            "```\n{} total · {} people\n```",
             format_duration(grand_total),
             user_totals.len()
         ))
