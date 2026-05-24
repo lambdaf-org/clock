@@ -18,19 +18,18 @@ impl ChartMode {
     }
 }
 
-// Discord-dark friendly theme
-const BG: RGBColor = RGBColor(0x1e, 0x1f, 0x22); // panel background
-const FG: RGBColor = RGBColor(0xea, 0xec, 0xee); // primary text
-const MUTED: RGBColor = RGBColor(0x9a, 0xa0, 0xa6); // axis text / subtitle
-const GRID: RGBColor = RGBColor(0x2f, 0x33, 0x39); // gridlines / axis line
+// Deep dark theme
+const BG: RGBColor = RGBColor(0x0a, 0x0b, 0x0f);
+const FG: RGBColor = RGBColor(0xe2, 0xe4, 0xe9);
+const MUTED: RGBColor = RGBColor(0x44, 0x4a, 0x5c);
 
-// Tableau-10-ish, high contrast on dark, color-blind friendlier than the old palette
+// Neon accent palette
 const PALETTE: [RGBColor; 5] = [
-    RGBColor(0x4C, 0x9A, 0xFF), // blue
-    RGBColor(0xF5, 0x85, 0x18), // orange
-    RGBColor(0x54, 0xA2, 0x4B), // green
-    RGBColor(0xE4, 0x57, 0x56), // red
-    RGBColor(0x72, 0xB7, 0xB2), // teal
+    RGBColor(0x00, 0xd4, 0xff), // cyan
+    RGBColor(0xb3, 0x4d, 0xff), // violet
+    RGBColor(0xff, 0x2d, 0x6f), // pink
+    RGBColor(0x00, 0xff, 0x87), // mint
+    RGBColor(0xff, 0xa5, 0x00), // amber
 ];
 
 /// Round `v` up to a "nice" number from a fixed sequence.
@@ -68,8 +67,8 @@ pub fn render_chart(data: &ChartData, mode: ChartMode) -> anyhow::Result<Vec<u8>
     }
 
     let (width, height): (u32, u32) = match mode {
-        ChartMode::Both => (1200, 900),
-        _ => (1200, 600),
+        ChartMode::Both => (1200, 960),
+        _ => (1200, 520),
     };
 
     // Render to a raw RGB pixel buffer (3 bytes per pixel).
@@ -149,7 +148,7 @@ where
     let label_count = n_weeks.min(8);
 
     let mut chart = ChartBuilder::on(area)
-        .caption(title, ("sans-serif", 24).into_font().color(&FG))
+        .caption(title, ("sans-serif", 20).into_font().color(&FG))
         .margin(25)
         .x_label_area_size(42)
         .y_label_area_size(52)
@@ -160,10 +159,10 @@ where
     chart
         .configure_mesh()
         .disable_x_mesh()
-        .light_line_style(GRID)
-        .bold_line_style(GRID)
-        .axis_style(GRID)
+        .disable_y_mesh()
+        .axis_style(MUTED.mix(0.0))
         .x_labels(label_count)
+        .y_labels(4)
         .x_label_style(("sans-serif", 11).into_font().color(&MUTED))
         .x_label_formatter(&|x| {
             week_labels
@@ -171,8 +170,6 @@ where
                 .map(|s| short_week_label(s))
                 .unwrap_or_default()
         })
-        .y_desc("Hours")
-        .axis_desc_style(("sans-serif", 12).into_font().color(&MUTED))
         .y_label_style(("sans-serif", 11).into_font().color(&MUTED))
         .y_label_formatter(&|y| format!("{:.0}h", y))
         .draw()
@@ -200,45 +197,60 @@ where
                 .collect()
         };
 
-        // For cumulative mode, draw a translucent area fill under the line.
-        if cumulative {
-            let mut area_pts: Vec<(i32, f64)> = points.clone();
-            // Close the polygon along the baseline.
-            if let (Some(&(last_x, _)), Some(&(first_x, _))) = (points.last(), points.first()) {
-                area_pts.push((last_x, 0.0));
-                area_pts.push((first_x, 0.0));
-            }
-            chart
-                .draw_series(std::iter::once(Polygon::new(
-                    area_pts,
-                    color.mix(0.10).filled(),
-                )))
-                .map_err(|e| anyhow::anyhow!("draw area: {:?}", e))?;
-        }
+        // Glow line — wide outer halo (18px, 6% opacity)
+        chart
+            .draw_series(LineSeries::new(
+                points.clone(),
+                color.mix(0.06).stroke_width(18),
+            ))
+            .map_err(|e| anyhow::anyhow!("draw glow1: {:?}", e))?;
 
+        // Glow line — medium halo (8px, 18% opacity)
+        chart
+            .draw_series(LineSeries::new(
+                points.clone(),
+                color.mix(0.18).stroke_width(8),
+            ))
+            .map_err(|e| anyhow::anyhow!("draw glow2: {:?}", e))?;
+
+        // Main line (2px, 100% opacity) — carries label and legend
         let username = user.username.clone();
         chart
-            .draw_series(LineSeries::new(points.clone(), color.stroke_width(4)))
+            .draw_series(LineSeries::new(points.clone(), color.stroke_width(2)))
             .map_err(|e| anyhow::anyhow!("draw line: {:?}", e))?
             .label(username)
             .legend(move |(lx, ly)| {
-                PathElement::new(vec![(lx, ly), (lx + 20, ly)], color.stroke_width(4))
+                PathElement::new(vec![(lx, ly), (lx + 20, ly)], color.stroke_width(2))
             });
 
-        // Draw a single endpoint dot at the last data point.
+        // Glow endpoint dot at the last data point.
         if let Some(&last_pt) = points.last() {
             chart
-                .draw_series(std::iter::once(Circle::new(last_pt, 5, color.filled())))
-                .map_err(|e| anyhow::anyhow!("draw endpoint: {:?}", e))?;
+                .draw_series(std::iter::once(Circle::new(
+                    last_pt,
+                    9,
+                    color.mix(0.10).filled(),
+                )))
+                .map_err(|e| anyhow::anyhow!("draw dot1: {:?}", e))?;
+            chart
+                .draw_series(std::iter::once(Circle::new(
+                    last_pt,
+                    5,
+                    color.mix(0.30).filled(),
+                )))
+                .map_err(|e| anyhow::anyhow!("draw dot2: {:?}", e))?;
+            chart
+                .draw_series(std::iter::once(Circle::new(last_pt, 2, color.filled())))
+                .map_err(|e| anyhow::anyhow!("draw dot3: {:?}", e))?;
         }
     }
 
     chart
         .configure_series_labels()
-        .background_style(BG.mix(0.85))
-        .border_style(GRID)
+        .background_style(RGBAColor(0, 0, 0, 0.0))
+        .border_style(RGBAColor(0, 0, 0, 0.0))
         .label_font(("sans-serif", 12).into_font().color(&FG))
-        .position(SeriesLabelPosition::UpperRight)
+        .position(SeriesLabelPosition::LowerLeft)
         .draw()
         .map_err(|e| anyhow::anyhow!("draw legend: {:?}", e))?;
 
