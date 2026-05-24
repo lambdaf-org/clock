@@ -519,7 +519,20 @@ async fn handle_stats(ctx: &Context, msg: &Message, db: &Arc<Db>) {
 }
 
 async fn handle_alltime(ctx: &Context, msg: &Message, db: &Arc<Db>) {
-    let alltime = db.activity_breakdown_alltime().unwrap_or_default();
+    let alltime = match db.activity_breakdown_alltime() {
+        Ok(data) => data,
+        Err(_) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_RED)
+                .title("⚠️ Failed to load all-time stats")
+                .description("Please try again in a moment.");
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+            return;
+        }
+    };
 
     if alltime.is_empty() {
         let embed = CreateEmbed::new()
