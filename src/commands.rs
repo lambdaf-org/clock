@@ -116,33 +116,41 @@ fn format_board(entries: &[LeaderboardEntry]) -> String {
     }
 
     const LB_BAR_WIDTH: usize = 12;
-    const MAX_NAME: usize = 16;
+    const MAX_NAME: usize = 12;
+    const RANK_WIDTH: usize = 3;    // "#1 " .. "#9 " or "#10"
+    const DUR_WIDTH: usize = 9;     // right-align durations, e.g. " 66h 20m"
+    const ELLIPSIS: &str = "...";
+    const ELLIPSIS_LEN: usize = 3;  // length of ELLIPSIS above
 
     let max_min = entries.iter().map(|e| e.total_minutes).max().unwrap_or(1);
 
-    let mut out = String::new();
+    let mut lines: Vec<String> = Vec::new();
     for (i, e) in entries.iter().enumerate() {
-        let rank = format!("#{}", i + 1);
+        let rank_str = format!("#{}", i + 1);
+        // left-align rank to RANK_WIDTH (right-pads with spaces: "#1 ", "#10")
+        let rank_padded = format!("{:<width$}", rank_str, width = RANK_WIDTH);
 
+        // truncate long names with ELLIPSIS so monospace width stays stable
         let name: String = if e.username.chars().count() > MAX_NAME {
-            format!("{}…", e.username.chars().take(MAX_NAME - 1).collect::<String>())
+            format!("{}{}", e.username.chars().take(MAX_NAME - ELLIPSIS_LEN).collect::<String>(), ELLIPSIS)
         } else {
             e.username.clone()
         };
-
-        // subtle top-3 emphasis via bold
-        let name_fmt = if i < 3 {
-            format!("**{}**", name)
-        } else {
-            name
-        };
+        // pad name to MAX_NAME chars (manual to handle multi-byte chars correctly)
+        let name_char_len = name.chars().count();
+        let name_padded = format!("{}{}", name, " ".repeat(MAX_NAME.saturating_sub(name_char_len)));
 
         let bar = make_bar_width(e.total_minutes, max_min, LB_BAR_WIDTH);
 
         let dur = format_duration(e.total_minutes);
-        out += &format!("{}  {}   {}   {}\n", rank, name_fmt, bar, dur);
+        // right-align duration to DUR_WIDTH
+        let dur_char_len = dur.chars().count();
+        let dur_padded = format!("{}{}", " ".repeat(DUR_WIDTH.saturating_sub(dur_char_len)), dur);
+
+        lines.push(format!("{}  {}  {}  {}", rank_padded, name_padded, bar, dur_padded));
     }
-    out
+
+    format!("```\n{}\n```", lines.join("\n"))
 }
 
 fn format_activity_breakdown(entries: &[ActivityEntry]) -> String {
