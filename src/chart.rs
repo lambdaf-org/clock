@@ -19,24 +19,24 @@ impl ChartMode {
     }
 }
 
-// Premium dark theme
-const BG: RGBColor = RGBColor(0x08, 0x0b, 0x12);
-const FG: RGBColor = RGBColor(0xe6, 0xeb, 0xf5);
-const MUTED: RGBColor = RGBColor(0x8a, 0x94, 0xa8);
-const GRID: RGBColor = RGBColor(0x1f, 0x26, 0x35);
-const PANEL_BG: RGBColor = RGBColor(0x10, 0x15, 0x22);
-const PANEL_STROKE: RGBColor = RGBColor(0x1c, 0x24, 0x35);
-const BAR_BG: RGBColor = RGBColor(0x1b, 0x23, 0x34);
-const WEEK_ACCENT: RGBColor = RGBColor(0x5c, 0x8d, 0xff);
-const ALLTIME_ACCENT: RGBColor = RGBColor(0x7a, 0x68, 0xff);
+// Linear-style near-black theme.
+const BG: RGBColor = RGBColor(0x02, 0x03, 0x05);
+const FG: RGBColor = RGBColor(0xf4, 0xf4, 0xf5);
+const MUTED: RGBColor = RGBColor(0x71, 0x71, 0x7a);
+const GRID: RGBColor = RGBColor(0x18, 0x1a, 0x22);
+const PANEL_BG: RGBColor = RGBColor(0x07, 0x08, 0x0c);
+const PANEL_STROKE: RGBColor = RGBColor(0x1a, 0x1c, 0x24);
+const BAR_BG: RGBColor = RGBColor(0x12, 0x14, 0x1b);
+const WEEK_ACCENT: RGBColor = RGBColor(0xd8, 0xe2, 0xff);
+const ALLTIME_ACCENT: RGBColor = RGBColor(0xa7, 0x8b, 0xfa);
 
-// Calm accent palette
+// Muted analytics palette.
 const PALETTE: [RGBColor; 5] = [
-    RGBColor(0x5c, 0x8d, 0xff), // blue
-    RGBColor(0x7a, 0x68, 0xff), // violet
-    RGBColor(0x2d, 0xc7, 0xb8), // teal
-    RGBColor(0xf3, 0xb2, 0x59), // amber
-    RGBColor(0xd9, 0x78, 0xa8), // rose
+    RGBColor(0xd8, 0xe2, 0xff), // ice
+    RGBColor(0xa7, 0x8b, 0xfa), // violet
+    RGBColor(0x8b, 0x94, 0xa7), // slate
+    RGBColor(0x67, 0xe8, 0xf9), // cyan
+    RGBColor(0xe5, 0xe7, 0xeb), // zinc
 ];
 
 /// Round `v` up to a "nice" number from a fixed sequence.
@@ -88,14 +88,14 @@ pub fn render_chart(data: &ChartData, mode: ChartMode) -> anyhow::Result<Vec<u8>
         match mode {
             ChartMode::Both => {
                 let sub = root.split_evenly((2, 1));
-                draw_panel(&sub[0], data, false, "Weekly Hours — Top 5")?;
-                draw_panel(&sub[1], data, true, "Cumulative Hours — Top 5")?;
+                draw_panel(&sub[0], data, false, "Weekly hours · top 5")?;
+                draw_panel(&sub[1], data, true, "Cumulative hours · top 5")?;
             }
             ChartMode::Cumulative => {
-                draw_panel(&root, data, true, "Cumulative Hours — Top 5")?;
+                draw_panel(&root, data, true, "Cumulative hours · top 5")?;
             }
             ChartMode::Totals => {
-                draw_panel(&root, data, false, "Weekly Hours — Top 5")?;
+                draw_panel(&root, data, false, "Weekly hours · top 5")?;
             }
         }
 
@@ -153,25 +153,42 @@ pub fn render_leaderboard_card(
         root.fill(&BG)
             .map_err(|e| anyhow::anyhow!("fill error: {:?}", e))?;
 
+        root.draw(&Rectangle::new(
+            [(36, 32), (1404, 920)],
+            ShapeStyle::from(&PANEL_BG).filled(),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw card bg: {:?}", e))?;
+        root.draw(&Rectangle::new(
+            [(36, 32), (1404, 920)],
+            ShapeStyle::from(&PANEL_STROKE).stroke_width(1),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw card border: {:?}", e))?;
+
         root.draw(&Text::new(
             "Leaderboard",
-            (64, 82),
-            ("sans-serif", 46).into_font().color(&FG),
+            (80, 92),
+            ("sans-serif", 42).into_font().color(&FG),
         ))
         .map_err(|e| anyhow::anyhow!("draw title: {:?}", e))?;
 
         root.draw(&Text::new(
             "Weekly and all-time tracked hours",
-            (64, 118),
-            ("sans-serif", 20).into_font().color(&MUTED),
+            (80, 126),
+            ("sans-serif", 19).into_font().color(&MUTED),
         ))
         .map_err(|e| anyhow::anyhow!("draw subtitle: {:?}", e))?;
 
-        let section_w = 1312;
-        let section_h = 360;
-        let left = 64;
-        let week_top = 150;
-        let alltime_top = 542;
+        root.draw(&PathElement::new(
+            vec![(80, 156), (1360, 156)],
+            PANEL_STROKE.mix(0.85).stroke_width(1),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw header divider: {:?}", e))?;
+
+        let section_w = 1280;
+        let section_h = 330;
+        let left = 80;
+        let week_top = 186;
+        let alltime_top = 534;
 
         draw_leaderboard_section(
             &root,
@@ -196,8 +213,8 @@ pub fn render_leaderboard_card(
 
         root.draw(&Text::new(
             "Resets every Monday 00:00 · Europe/Zurich",
-            (64, 950),
-            ("sans-serif", 17).into_font().color(&MUTED),
+            (80, 954),
+            ("sans-serif", 16).into_font().color(&MUTED),
         ))
         .map_err(|e| anyhow::anyhow!("draw footer: {:?}", e))?;
 
@@ -232,29 +249,18 @@ where
     DB: DrawingBackend,
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
 {
-    area.draw(&Rectangle::new(
-        [(x, y), (x + w, y + h)],
-        ShapeStyle::from(&PANEL_BG).filled(),
-    ))
-    .map_err(|e| anyhow::anyhow!("draw panel bg: {:?}", e))?;
-    area.draw(&Rectangle::new(
-        [(x, y), (x + w, y + h)],
-        ShapeStyle::from(&PANEL_STROKE).stroke_width(1),
-    ))
-    .map_err(|e| anyhow::anyhow!("draw panel border: {:?}", e))?;
-
     area.draw(&Text::new(
         title,
-        (x + 28, y + 42),
-        ("sans-serif", 28).into_font().color(&FG),
+        (x, y + 34),
+        ("sans-serif", 24).into_font().color(&FG),
     ))
     .map_err(|e| anyhow::anyhow!("draw section title: {:?}", e))?;
 
     let total_minutes: i64 = entries.iter().map(|e| e.total_minutes).sum();
     area.draw(&Text::new(
-        format!("Total · {}", format_duration(total_minutes)),
-        (x + w - 320, y + 42),
-        ("sans-serif", 20)
+        format!("total · {}", format_duration(total_minutes)),
+        (x + w, y + 34),
+        ("sans-serif", 18)
             .into_font()
             .color(&MUTED)
             .pos(Pos::new(HPos::Right, VPos::Center)),
@@ -263,23 +269,22 @@ where
 
     if entries.is_empty() {
         area.draw(&Text::new(
-            "No data yet",
-            (x + 28, y + 98),
-            ("sans-serif", 20).into_font().color(&MUTED),
+            "No data yet.",
+            (x, y + 92),
+            ("sans-serif", 18).into_font().color(&MUTED),
         ))
         .map_err(|e| anyhow::anyhow!("draw empty text: {:?}", e))?;
         return Ok(());
     }
 
-    let top = x + 28;
-    let rank_x = top;
-    let name_x = top + 84;
-    let bar_x = top + 380;
-    let bar_w = w - 620;
-    let dur_x = x + w - 34;
-    let row_start_y = y + 90;
-    const HEADER_HEIGHT: i32 = 108;
-    const ROW_HEIGHT: i32 = 44;
+    let rank_x = x;
+    let name_x = x + 84;
+    let bar_x = x + 376;
+    let bar_w = w - 584;
+    let dur_x = x + w;
+    let row_start_y = y + 76;
+    const HEADER_HEIGHT: i32 = 92;
+    const ROW_HEIGHT: i32 = 42;
     const TOP_RANKS_COUNT: usize = 3;
     let max_entries = ((h - HEADER_HEIGHT) / ROW_HEIGHT).max(1) as usize;
     let visible = entries.iter().take(max_entries).collect::<Vec<_>>();
@@ -288,38 +293,46 @@ where
     for (idx, entry) in visible.iter().enumerate() {
         let row_y = row_start_y + (idx as i32 * ROW_HEIGHT);
         let ratio = (entry.total_minutes as f64 / max_minutes.max(1) as f64).clamp(0.0, 1.0);
-        let filled = ((bar_w as f64 * ratio).round() as i32).max(2);
+        let filled = ((bar_w as f64 * ratio).round() as i32).max(1);
         let rank_color = if idx < TOP_RANKS_COUNT { accent } else { MUTED };
+
+        if idx > 0 {
+            area.draw(&PathElement::new(
+                vec![(x, row_y - 10), (x + w, row_y - 10)],
+                PANEL_STROKE.mix(0.45).stroke_width(1),
+            ))
+            .map_err(|e| anyhow::anyhow!("draw row divider: {:?}", e))?;
+        }
 
         area.draw(&Text::new(
             format!("#{}", idx + 1),
-            (rank_x, row_y + 22),
-            ("sans-serif", 20).into_font().color(&rank_color),
+            (rank_x, row_y + 18),
+            ("sans-serif", 18).into_font().color(&rank_color),
         ))
         .map_err(|e| anyhow::anyhow!("draw rank: {:?}", e))?;
 
         area.draw(&Text::new(
             truncate_name(&entry.username, 18),
-            (name_x, row_y + 22),
-            ("sans-serif", 20).into_font().color(&FG),
+            (name_x, row_y + 18),
+            ("sans-serif", 18).into_font().color(&FG),
         ))
         .map_err(|e| anyhow::anyhow!("draw name: {:?}", e))?;
 
         area.draw(&Rectangle::new(
-            [(bar_x, row_y + 8), (bar_x + bar_w, row_y + 26)],
-            ShapeStyle::from(&BAR_BG).filled(),
+            [(bar_x, row_y + 7), (bar_x + bar_w, row_y + 17)],
+            ShapeStyle::from(&BAR_BG.mix(0.9)).filled(),
         ))
         .map_err(|e| anyhow::anyhow!("draw bar bg: {:?}", e))?;
         area.draw(&Rectangle::new(
-            [(bar_x, row_y + 8), (bar_x + filled, row_y + 26)],
-            ShapeStyle::from(&accent.mix(0.88)).filled(),
+            [(bar_x, row_y + 7), (bar_x + filled, row_y + 17)],
+            ShapeStyle::from(&accent.mix(0.72)).filled(),
         ))
         .map_err(|e| anyhow::anyhow!("draw bar fg: {:?}", e))?;
 
         area.draw(&Text::new(
             format_duration(entry.total_minutes),
-            (dur_x, row_y + 22),
-            ("sans-serif", 20)
+            (dur_x, row_y + 18),
+            ("sans-serif", 18)
                 .into_font()
                 .color(&FG)
                 .pos(Pos::new(HPos::Right, VPos::Center)),
@@ -341,6 +354,22 @@ where
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
 {
     let n_weeks = data.week_labels.len();
+    let (area_w, area_h) = area.dim_in_pixel();
+    let card_left = 34;
+    let card_top = 26;
+    let card_right = area_w as i32 - 34;
+    let card_bottom = area_h as i32 - 28;
+
+    area.draw(&Rectangle::new(
+        [(card_left, card_top), (card_right, card_bottom)],
+        ShapeStyle::from(&PANEL_BG).filled(),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw chart card bg: {:?}", e))?;
+    area.draw(&Rectangle::new(
+        [(card_left, card_top), (card_right, card_bottom)],
+        ShapeStyle::from(&PANEL_STROKE).stroke_width(1),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw chart card border: {:?}", e))?;
 
     // Compute the y-axis maximum.
     let raw_max: f64 = if cumulative {
@@ -368,10 +397,10 @@ where
     let label_count = n_weeks.min(8);
 
     let mut chart = ChartBuilder::on(area)
-        .caption(title, ("sans-serif", 26).into_font().color(&FG))
-        .margin(36)
-        .x_label_area_size(54)
-        .y_label_area_size(68)
+        .caption(title, ("sans-serif", 24).into_font().color(&FG))
+        .margin(58)
+        .x_label_area_size(46)
+        .y_label_area_size(58)
         .build_cartesian_2d(0i32..x_max, 0.0f64..y_max)
         .map_err(|e| anyhow::anyhow!("build chart: {:?}", e))?;
 
@@ -379,19 +408,19 @@ where
     chart
         .configure_mesh()
         .disable_x_mesh()
-        .bold_line_style(GRID.mix(0.15))
-        .light_line_style(GRID.mix(0.22))
+        .bold_line_style(GRID.mix(0.55))
+        .light_line_style(GRID.mix(0.35))
         .axis_style(MUTED.mix(0.0)) // fully transparent — no visible axis line
         .x_labels(label_count)
         .y_labels(5)
-        .x_label_style(("sans-serif", 14).into_font().color(&MUTED))
+        .x_label_style(("sans-serif", 13).into_font().color(&MUTED))
         .x_label_formatter(&|x| {
             week_labels
                 .get(*x as usize)
                 .map(|s| short_week_label(s))
                 .unwrap_or_default()
         })
-        .y_label_style(("sans-serif", 14).into_font().color(&MUTED))
+        .y_label_style(("sans-serif", 13).into_font().color(&MUTED))
         .y_label_formatter(&|y| format!("{:.0}h", y))
         .draw()
         .map_err(|e| anyhow::anyhow!("configure mesh: {:?}", e))?;
@@ -418,59 +447,32 @@ where
                 .collect()
         };
 
-        // Subtle outer halo.
-        chart
-            .draw_series(LineSeries::new(
-                points.clone(),
-                color.mix(0.14).stroke_width(6),
-            ))
-            .map_err(|e| anyhow::anyhow!("draw glow1: {:?}", e))?;
-
-        // Inner halo.
-        chart
-            .draw_series(LineSeries::new(
-                points.clone(),
-                color.mix(0.25).stroke_width(4),
-            ))
-            .map_err(|e| anyhow::anyhow!("draw glow2: {:?}", e))?;
-
-        // Main line — carries label and legend.
+        // Main line — restrained, no glow.
         let username = user.username.clone();
         chart
-            .draw_series(LineSeries::new(points.clone(), color.stroke_width(3)))
+            .draw_series(LineSeries::new(points.clone(), color.mix(0.82).stroke_width(2)))
             .map_err(|e| anyhow::anyhow!("draw line: {:?}", e))?
             .label(username)
             .legend(move |(lx, ly)| {
-                PathElement::new(vec![(lx, ly), (lx + 24, ly)], color.stroke_width(3))
+                PathElement::new(vec![(lx, ly), (lx + 22, ly)], color.mix(0.82).stroke_width(2))
             });
 
-        // Glow endpoint dot at the last data point.
         if let Some(&last_pt) = points.last() {
             chart
                 .draw_series(std::iter::once(Circle::new(
                     last_pt,
-                    6,
-                    color.mix(0.18).filled(),
+                    3,
+                    color.mix(0.82).filled(),
                 )))
-                .map_err(|e| anyhow::anyhow!("draw dot1: {:?}", e))?;
-            chart
-                .draw_series(std::iter::once(Circle::new(
-                    last_pt,
-                    4,
-                    color.mix(0.42).filled(),
-                )))
-                .map_err(|e| anyhow::anyhow!("draw dot2: {:?}", e))?;
-            chart
-                .draw_series(std::iter::once(Circle::new(last_pt, 2, color.filled())))
-                .map_err(|e| anyhow::anyhow!("draw dot3: {:?}", e))?;
+                .map_err(|e| anyhow::anyhow!("draw endpoint: {:?}", e))?;
         }
     }
 
     chart
         .configure_series_labels()
-        .background_style(BG.mix(0.86).filled())
-        .border_style(PANEL_STROKE.mix(0.75))
-        .label_font(("sans-serif", 15).into_font().color(&FG))
+        .background_style(PANEL_BG.mix(0.94).filled())
+        .border_style(PANEL_STROKE.mix(0.6))
+        .label_font(("sans-serif", 14).into_font().color(&FG))
         .position(SeriesLabelPosition::UpperLeft)
         .draw()
         .map_err(|e| anyhow::anyhow!("draw legend: {:?}", e))?;
