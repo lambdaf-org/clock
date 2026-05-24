@@ -96,13 +96,17 @@ fn format_duration(minutes: i64) -> String {
 }
 
 fn make_bar(minutes: i64, max_minutes: i64) -> String {
+    make_bar_width(minutes, max_minutes, BAR_WIDTH)
+}
+
+fn make_bar_width(minutes: i64, max_minutes: i64, width: usize) -> String {
     let ratio = if max_minutes > 0 {
         (minutes as f64 / max_minutes as f64).min(1.0)
     } else {
         0.0
     };
-    let filled = (ratio * BAR_WIDTH as f64).round() as usize;
-    let empty = BAR_WIDTH - filled;
+    let filled = (ratio * width as f64).round() as usize;
+    let empty = width - filled;
     format!("{}{}", BAR_FULL.repeat(filled), BAR_EMPTY.repeat(empty))
 }
 
@@ -120,10 +124,8 @@ fn format_board(entries: &[LeaderboardEntry]) -> String {
     for (i, e) in entries.iter().enumerate() {
         let rank = format!("#{}", i + 1);
 
-        let chars: Vec<char> = e.username.chars().collect();
-        let name: String = if chars.len() > MAX_NAME {
-            let truncated: String = chars[..MAX_NAME - 1].iter().collect();
-            format!("{}…", truncated)
+        let name: String = if e.username.chars().count() > MAX_NAME {
+            format!("{}…", e.username.chars().take(MAX_NAME - 1).collect::<String>())
         } else {
             e.username.clone()
         };
@@ -135,10 +137,7 @@ fn format_board(entries: &[LeaderboardEntry]) -> String {
             name
         };
 
-        let ratio = (e.total_minutes as f64 / max_min as f64).min(1.0);
-        let filled = (ratio * LB_BAR_WIDTH as f64).round() as usize;
-        let empty = LB_BAR_WIDTH - filled;
-        let bar = format!("{}{}", BAR_FULL.repeat(filled), BAR_EMPTY.repeat(empty));
+        let bar = make_bar_width(e.total_minutes, max_min, LB_BAR_WIDTH);
 
         let dur = format_duration(e.total_minutes);
         out += &format!("{}  {}   {}   {}\n", rank, name_fmt, bar, dur);
