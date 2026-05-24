@@ -160,7 +160,7 @@ where
         .configure_mesh()
         .disable_x_mesh()
         .disable_y_mesh()
-        .axis_style(MUTED.mix(0.0))
+        .axis_style(MUTED.mix(0.0)) // fully transparent — no visible axis line
         .x_labels(label_count)
         .y_labels(4)
         .x_label_style(("sans-serif", 11).into_font().color(&MUTED))
