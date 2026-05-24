@@ -117,20 +117,22 @@ fn format_board(entries: &[LeaderboardEntry]) -> String {
 
     const LB_BAR_WIDTH: usize = 12;
     const MAX_NAME: usize = 12;
-    const RANK_WIDTH: usize = 3; // "#1 " .. "#9 " or "#10"
-    const DUR_WIDTH: usize = 9;  // right-align durations, e.g. "66h 20m  "
+    const RANK_WIDTH: usize = 3;    // "#1 " .. "#9 " or "#10"
+    const DUR_WIDTH: usize = 9;     // right-align durations, e.g. " 66h 20m"
+    const ELLIPSIS: &str = "...";
+    const ELLIPSIS_LEN: usize = 3;  // length of ELLIPSIS above
 
     let max_min = entries.iter().map(|e| e.total_minutes).max().unwrap_or(1);
 
     let mut lines: Vec<String> = Vec::new();
     for (i, e) in entries.iter().enumerate() {
         let rank_str = format!("#{}", i + 1);
-        // left-pad rank to RANK_WIDTH using ASCII spaces (safe for monospace)
+        // left-align rank to RANK_WIDTH (right-pads with spaces: "#1 ", "#10")
         let rank_padded = format!("{:<width$}", rank_str, width = RANK_WIDTH);
 
-        // truncate with ASCII "..." so monospace width stays stable
+        // truncate long names with ELLIPSIS so monospace width stays stable
         let name: String = if e.username.chars().count() > MAX_NAME {
-            format!("{}...", e.username.chars().take(MAX_NAME - 3).collect::<String>())
+            format!("{}{}", e.username.chars().take(MAX_NAME - ELLIPSIS_LEN).collect::<String>(), ELLIPSIS)
         } else {
             e.username.clone()
         };
