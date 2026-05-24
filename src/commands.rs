@@ -1,4 +1,4 @@
-use crate::db::{self, ActivityEntry, Db, LeaderboardEntry, WeeklySummary};
+use crate::db::{self, ActivityEntry, Db, WeeklySummary};
 use serenity::all::*;
 use std::sync::Arc;
 
@@ -110,48 +110,6 @@ fn make_bar_width(minutes: i64, max_minutes: i64, width: usize) -> String {
     format!("{}{}", BAR_FULL.repeat(filled), BAR_EMPTY.repeat(empty))
 }
 
-fn format_board(entries: &[LeaderboardEntry]) -> String {
-    if entries.is_empty() {
-        return "*no data yet*".into();
-    }
-
-    const LB_BAR_WIDTH: usize = 12;
-    const MAX_NAME: usize = 12;
-    const RANK_WIDTH: usize = 3;    // "#1 " .. "#9 " or "#10"
-    const DUR_WIDTH: usize = 9;     // right-align durations, e.g. " 66h 20m"
-    const ELLIPSIS: &str = "...";
-    const ELLIPSIS_LEN: usize = 3;  // length of ELLIPSIS above
-
-    let max_min = entries.iter().map(|e| e.total_minutes).max().unwrap_or(1);
-
-    let mut lines: Vec<String> = Vec::new();
-    for (i, e) in entries.iter().enumerate() {
-        let rank_str = format!("#{}", i + 1);
-        // left-align rank to RANK_WIDTH (right-pads with spaces: "#1 ", "#10")
-        let rank_padded = format!("{:<width$}", rank_str, width = RANK_WIDTH);
-
-        // truncate long names with ELLIPSIS so monospace width stays stable
-        let name: String = if e.username.chars().count() > MAX_NAME {
-            format!("{}{}", e.username.chars().take(MAX_NAME - ELLIPSIS_LEN).collect::<String>(), ELLIPSIS)
-        } else {
-            e.username.clone()
-        };
-        // pad name to MAX_NAME chars (manual to handle multi-byte chars correctly)
-        let name_char_len = name.chars().count();
-        let name_padded = format!("{}{}", name, " ".repeat(MAX_NAME.saturating_sub(name_char_len)));
-
-        let bar = make_bar_width(e.total_minutes, max_min, LB_BAR_WIDTH);
-
-        let dur = format_duration(e.total_minutes);
-        // right-align duration to DUR_WIDTH
-        let dur_char_len = dur.chars().count();
-        let dur_padded = format!("{}{}", " ".repeat(DUR_WIDTH.saturating_sub(dur_char_len)), dur);
-
-        lines.push(format!("{}  {}  {}  {}", rank_padded, name_padded, bar, dur_padded));
-    }
-
-    format!("```\n{}\n```", lines.join("\n"))
-}
 
 fn format_activity_breakdown(entries: &[ActivityEntry]) -> String {
     if entries.is_empty() {
@@ -449,42 +407,41 @@ async fn handle_leaderboard(ctx: &Context, msg: &Message, db: &Arc<Db>) {
     let alltime = db.leaderboard_alltime().unwrap_or_default();
 
     let week_label = db::swiss_week_label();
-    let weekly_text = format_board(&weekly);
-    let alltime_text = format_board(&alltime);
+    let timestamp = swiss_timestamp();
 
-    let weekly_total: i64 = weekly.iter().map(|e| e.total_minutes).sum();
-    let alltime_total: i64 = alltime.iter().map(|e| e.total_minutes).sum();
+    let png_bytes =
+        match crate::chart::render_leaderboard_card(&weekly, &alltime, &week_label, &timestamp) {
+            Ok(b) => b,
+            Err(e) => {
+                let embed = CreateEmbed::new()
+                    .color(COLOR_PINK)
+                    .title("render error")
+                    .description(format!("Failed to generate leaderboard card: {}", e))
+                    .footer(CreateEmbedFooter::new(timestamp));
+                let _ = msg
+                    .channel_id
+                    .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                    .await;
+                return;
+            }
+        };
 
     let embed = CreateEmbed::new()
         .color(COLOR_GOLD)
         .title("leaderboard")
-        .field(
-            format!("this week · {}", week_label),
-            format!(
-                "{}\n*Total: {}*",
-                weekly_text,
-                format_duration(weekly_total)
-            ),
-            false,
-        )
-        .field("\u{200b}", "\u{200b}", false)
-        .field(
-            "all time",
-            format!(
-                "{}\n*Total: {}*",
-                alltime_text,
-                format_duration(alltime_total)
-            ),
-            false,
-        )
+        .image("attachment://leaderboard.png")
         .footer(CreateEmbedFooter::new(format!(
-            "{} · Resets every Monday 00:00",
+            "{}  ·  Resets every Monday 00:00",
             swiss_timestamp()
         )));
 
+    let attachment = CreateAttachment::bytes(png_bytes, "leaderboard.png");
     let _ = msg
         .channel_id
-        .send_message(&ctx.http, CreateMessage::new().embed(embed))
+        .send_message(
+            &ctx.http,
+            CreateMessage::new().embed(embed).add_file(attachment),
+        )
         .await;
 }
 
