@@ -21,6 +21,10 @@ const COLOR_BLUE: u32 = 0x5865f2;
 const COLOR_GOLD: u32 = 0xf1c40f;
 const COLOR_DARK: u32 = 0x0a0b0f;
 const COLOR_PURPLE: u32 = 0x9b59b6;
+const COLOR_PINK: u32 = 0xff2d6f;
+const COLOR_CYAN: u32 = 0x00d4ff;
+const COLOR_AMBER: u32 = 0xffa500;
+const COLOR_VIOLET: u32 = 0xb34dff;
 
 const BAR_FULL: &str = "▰";
 const BAR_EMPTY: &str = "▱";
@@ -136,28 +140,26 @@ fn format_activity_breakdown(entries: &[ActivityEntry]) -> String {
         return "*No data yet*".into();
     }
 
+    // Precompute per-user totals once to avoid O(n²) scans.
+    let mut user_totals: std::collections::HashMap<&str, i64> =
+        std::collections::HashMap::new();
+    for e in entries {
+        *user_totals.entry(e.username.as_str()).or_insert(0) += e.total_minutes;
+    }
+
     let mut out = String::new();
     let mut current_user = String::new();
 
     for e in entries {
+        let user_total = *user_totals.get(e.username.as_str()).unwrap_or(&0);
         if e.username != current_user {
             if !current_user.is_empty() {
                 out += "\n";
             }
-            let user_total: i64 = entries
-                .iter()
-                .filter(|a| a.username == e.username)
-                .map(|a| a.total_minutes)
-                .sum();
             out += &format!("**{}** — {}\n", e.username, format_duration(user_total));
             current_user = e.username.clone();
         }
 
-        let user_total: i64 = entries
-            .iter()
-            .filter(|a| a.username == e.username)
-            .map(|a| a.total_minutes)
-            .sum();
         let pct = if user_total > 0 {
             (e.total_minutes as f64 / user_total as f64 * 100.0).round() as i64
         } else {
@@ -534,7 +536,7 @@ async fn handle_alltime(ctx: &Context, msg: &Message, db: &Arc<Db>) {
 
     if alltime.is_empty() {
         let embed = CreateEmbed::new()
-            .color(COLOR_GRAY)
+            .color(COLOR_DARK)
             .title("⏳ No all-time data yet")
             .description("Clock in to start tracking.");
         let _ = msg
@@ -816,58 +818,3 @@ async fn handle_chart(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
         .await;
 }
 
-async fn handle_alltime(ctx: &Context, msg: &Message, db: &Arc<Db>) {
-    let alltime = db.activity_breakdown_alltime().unwrap_or_default();
-
-    if alltime.is_empty() {
-        let embed = CreateEmbed::new()
-            .color(COLOR_DARK)
-            .title("all-time stats")
-            .description("No data yet.");
-        let _ = msg
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().embed(embed))
-            .await;
-        return;
-    }
-
-    let mut activity_totals: std::collections::HashMap<String, i64> =
-        std::collections::HashMap::new();
-    let mut user_totals: std::collections::HashMap<String, i64> =
-        std::collections::HashMap::new();
-    for e in &alltime {
-        *activity_totals.entry(e.activity.clone()).or_insert(0) += e.total_minutes;
-        *user_totals.entry(e.username.clone()).or_insert(0) += e.total_minutes;
-    }
-
-    let mut sorted_acts: Vec<_> = activity_totals.into_iter().collect();
-    sorted_acts.sort_by(|a, b| b.1.cmp(&a.1));
-
-    let grand_total: i64 = user_totals.values().sum();
-    let max_act = sorted_acts.first().map(|(_, m)| *m).unwrap_or(1);
-
-    let mut top_acts = String::new();
-    for (act, mins) in sorted_acts.iter().take(10) {
-        let bar = make_bar(*mins, max_act);
-        top_acts += &format!("`{}` {} — {}\n", bar, act, format_duration(*mins));
-    }
-
-    let breakdown_text = format_activity_breakdown(&alltime);
-
-    let embed = CreateEmbed::new()
-        .color(COLOR_VIOLET)
-        .title("all-time stats")
-        .description(format!(
-            "```\n{} total · {} people\n```",
-            format_duration(grand_total),
-            user_totals.len()
-        ))
-        .field("top activities", &top_acts, false)
-        .field("per person", &breakdown_text, false)
-        .footer(CreateEmbedFooter::new(swiss_timestamp()));
-
-    let _ = msg
-        .channel_id
-        .send_message(&ctx.http, CreateMessage::new().embed(embed))
-        .await;
-}
