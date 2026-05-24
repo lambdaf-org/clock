@@ -128,6 +128,9 @@ fn format_duration(minutes: i64) -> String {
 }
 
 fn truncate_name(name: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
     let count = name.chars().count();
     if count <= max_chars {
         return name.to_string();
@@ -275,16 +278,18 @@ where
     let bar_w = w - 620;
     let dur_x = x + w - 34;
     let row_start_y = y + 90;
-    let row_h = 44;
-    let max_entries = ((h - 108) / row_h).max(1) as usize;
+    const HEADER_HEIGHT: i32 = 108;
+    const ROW_HEIGHT: i32 = 44;
+    const TOP_RANKS_COUNT: usize = 3;
+    let max_entries = ((h - HEADER_HEIGHT) / ROW_HEIGHT).max(1) as usize;
     let visible = entries.iter().take(max_entries).collect::<Vec<_>>();
     let max_minutes = visible.iter().map(|e| e.total_minutes).max().unwrap_or(1);
 
     for (idx, entry) in visible.iter().enumerate() {
-        let row_y = row_start_y + (idx as i32 * row_h);
+        let row_y = row_start_y + (idx as i32 * ROW_HEIGHT);
         let ratio = (entry.total_minutes as f64 / max_minutes.max(1) as f64).clamp(0.0, 1.0);
         let filled = ((bar_w as f64 * ratio).round() as i32).max(2);
-        let rank_color = if idx < 3 { accent } else { MUTED };
+        let rank_color = if idx < TOP_RANKS_COUNT { accent } else { MUTED };
 
         area.draw(&Text::new(
             format!("#{}", idx + 1),
@@ -542,6 +547,15 @@ mod tests {
     fn test_short_week_label() {
         assert_eq!(short_week_label("KW14/2026"), "W14");
         assert_eq!(short_week_label("foo"), "foo");
+    }
+
+    #[test]
+    fn test_truncate_name() {
+        assert_eq!(truncate_name("alice", 0), "");
+        assert_eq!(truncate_name("alice", 10), "alice");
+        assert_eq!(truncate_name("123456", 6), "123456");
+        assert_eq!(truncate_name("1234567", 6), "12345…");
+        assert_eq!(truncate_name("überlangername", 5), "über…");
     }
 
     #[test]
