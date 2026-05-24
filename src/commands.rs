@@ -570,6 +570,9 @@ async fn handle_alltime(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         let bar = make_bar(*mins, max_act);
         top_acts += &format!("`{}` {} — {}\n", bar, act, format_duration(*mins));
     }
+    if top_acts.is_empty() {
+        top_acts = "*No activities found*".to_string();
+    }
 
     // Embed 1: overview + top activities
     let embed1 = CreateEmbed::new()
@@ -584,7 +587,13 @@ async fn handle_alltime(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         .footer(CreateEmbedFooter::new(swiss_timestamp()));
 
     // Embed 2: per-person breakdown (reuse existing formatter)
-    let breakdown_text = format_activity_breakdown(&alltime);
+    let mut breakdown_text = format_activity_breakdown(&alltime);
+    const MAX_EMBED_DESC_CHARS: usize = 4000;
+    if breakdown_text.chars().count() > MAX_EMBED_DESC_CHARS {
+        let keep = MAX_EMBED_DESC_CHARS.saturating_sub(16);
+        let truncated: String = breakdown_text.chars().take(keep).collect();
+        breakdown_text = format!("{truncated}\n… (truncated)");
+    }
     let embed2 = CreateEmbed::new()
         .color(COLOR_PURPLE)
         .title("👤 Per-Person Breakdown (All Time)")
