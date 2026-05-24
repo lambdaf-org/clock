@@ -19,14 +19,12 @@ const COLOR_GREEN: u32 = 0x2ecc71;
 const COLOR_RED: u32 = 0xe74c3c;
 const COLOR_BLUE: u32 = 0x5865f2;
 const COLOR_GOLD: u32 = 0xf1c40f;
-const COLOR_GRAY: u32 = 0x2f3136;
+const COLOR_DARK: u32 = 0x0a0b0f;
 const COLOR_PURPLE: u32 = 0x9b59b6;
-const COLOR_ORANGE: u32 = 0xe67e22;
 
-const BAR_FULL: &str = "█";
-const BAR_EMPTY: &str = "░";
+const BAR_FULL: &str = "▰";
+const BAR_EMPTY: &str = "▱";
 const BAR_WIDTH: usize = 16;
-const CHART_MEDALS: [&str; 5] = ["🥇", "🥈", "🥉", "▫️", "▫️"];
 
 pub async fn handle_command(ctx: &Context, msg: &Message, db: &Arc<Db>) {
     if !msg.content.starts_with("/clock") {
@@ -104,41 +102,33 @@ fn make_bar(minutes: i64, max_minutes: i64) -> String {
     format!("{}{}", BAR_FULL.repeat(filled), BAR_EMPTY.repeat(empty))
 }
 
-fn make_pie_slice(minutes: i64, total: i64) -> String {
-    let pct = if total > 0 {
-        (minutes as f64 / total as f64 * 100.0).round() as i64
-    } else {
-        0
-    };
-    let blocks = (pct as f64 / 10.0).round() as usize;
-    format!("{} {}%", "▓".repeat(blocks.max(1)), pct)
-}
-
 fn format_board(entries: &[LeaderboardEntry]) -> String {
     if entries.is_empty() {
-        return "*No data yet*".into();
+        return "```\nno data yet\n```".into();
     }
 
-    let medals = ["🥇", "🥈", "🥉"];
     let max_min = entries.iter().map(|e| e.total_minutes).max().unwrap_or(1);
-
     let max_name_len = entries.iter().map(|e| e.username.len()).max().unwrap_or(8);
 
-    let mut out = String::new();
+    let mut out = String::from("```\n");
     for (i, e) in entries.iter().enumerate() {
-        let medal = if i < 3 { medals[i] } else { "▫️" };
+        let rank = if i < 3 {
+            format!("{}.", i + 1)
+        } else {
+            "  ".to_string()
+        };
         let bar = make_bar(e.total_minutes, max_min);
         let dur = format_duration(e.total_minutes);
         out += &format!(
-            "{} `{:<width$} {}` {}\n",
-            medal,
+            "{} {:<width$}  {}  {}\n",
+            rank,
             e.username,
             bar,
             dur,
             width = max_name_len
         );
     }
-    out
+    out + "```"
 }
 
 fn format_activity_breakdown(entries: &[ActivityEntry]) -> String {
@@ -154,7 +144,12 @@ fn format_activity_breakdown(entries: &[ActivityEntry]) -> String {
             if !current_user.is_empty() {
                 out += "\n";
             }
-            out += &format!("👤 **{}**\n", e.username);
+            let user_total: i64 = entries
+                .iter()
+                .filter(|a| a.username == e.username)
+                .map(|a| a.total_minutes)
+                .sum();
+            out += &format!("**{}** — {}\n", e.username, format_duration(user_total));
             current_user = e.username.clone();
         }
 
@@ -163,13 +158,16 @@ fn format_activity_breakdown(entries: &[ActivityEntry]) -> String {
             .filter(|a| a.username == e.username)
             .map(|a| a.total_minutes)
             .sum();
-
-        let pie = make_pie_slice(e.total_minutes, user_total);
+        let pct = if user_total > 0 {
+            (e.total_minutes as f64 / user_total as f64 * 100.0).round() as i64
+        } else {
+            0
+        };
         out += &format!(
-            "  `{}` {} — {}\n",
-            pie,
+            "    {} · {} ({}%)\n",
             e.activity,
-            format_duration(e.total_minutes)
+            format_duration(e.total_minutes),
+            pct
         );
     }
     out
@@ -213,8 +211,8 @@ pub fn build_weekly_summary_embeds(summary: &WeeklySummary, week_label: &str) ->
 
     embeds.push(
         CreateEmbed::new()
-            .color(COLOR_ORANGE)
-            .title(format!("📊 Weekly Report — {}", week_label))
+            .color(COLOR_AMBER)
+            .title(format!("weekly report · {}", week_label))
             .description(desc)
             .footer(CreateEmbedFooter::new(swiss_timestamp())),
     );
@@ -223,7 +221,7 @@ pub fn build_weekly_summary_embeds(summary: &WeeklySummary, week_label: &str) ->
         embeds.push(
             CreateEmbed::new()
                 .color(COLOR_PURPLE)
-                .title("🔍 Who worked on what")
+                .title("activity breakdown")
                 .description(format_activity_breakdown(&summary.breakdown)),
         );
     }
@@ -241,7 +239,7 @@ async fn handle_clock_in(ctx: &Context, msg: &Message, db: &Arc<Db>, activity: &
         Ok(()) => {
             let embed = CreateEmbed::new()
                 .color(COLOR_GREEN)
-                .title("🟢 Clocked In")
+                .title("clocked in")
                 .description(format!(
                     "**{}** started working on **{}**",
                     username, activity
@@ -262,8 +260,8 @@ async fn handle_clock_in(ctx: &Context, msg: &Message, db: &Arc<Db>, activity: &
                 None => "Already clocked in. `/clock out` first.".into(),
             };
             let embed = CreateEmbed::new()
-                .color(COLOR_RED)
-                .title("⚠️ Already Clocked In")
+                .color(COLOR_PINK)
+                .title("already clocked in")
                 .description(desc);
             let _ = msg
                 .channel_id
@@ -280,8 +278,8 @@ async fn handle_clock_out(ctx: &Context, msg: &Message, db: &Arc<Db>) {
     match db.clock_out(&user_id) {
         Ok((minutes, activity)) => {
             let embed = CreateEmbed::new()
-                .color(COLOR_RED)
-                .title("🔴 Clocked Out")
+                .color(COLOR_PINK)
+                .title("clocked out")
                 .description(format!(
                     "**{}** finished working on **{}**",
                     username, activity
@@ -295,8 +293,8 @@ async fn handle_clock_out(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         }
         Err(_) => {
             let embed = CreateEmbed::new()
-                .color(COLOR_GRAY)
-                .title("🤷 Not Clocked In")
+                .color(COLOR_DARK)
+                .title("not clocked in")
                 .description("Use `/clock in <activity>` first.");
             let _ = msg
                 .channel_id
@@ -329,8 +327,8 @@ async fn handle_switch(ctx: &Context, msg: &Message, db: &Arc<Db>, activity: &st
                 format!("**{}** started working on **{}**", username, activity)
             };
             let embed = CreateEmbed::new()
-                .color(COLOR_GREEN)
-                .title("🔄 Switched")
+                .color(COLOR_CYAN)
+                .title("switched")
                 .description(desc)
                 .footer(CreateEmbedFooter::new(format!(
                     "{} · /clock out when done",
@@ -343,8 +341,8 @@ async fn handle_switch(ctx: &Context, msg: &Message, db: &Arc<Db>, activity: &st
         }
         Err(e) => {
             let embed = CreateEmbed::new()
-                .color(COLOR_RED)
-                .title("⚠️ Switch Failed")
+                .color(COLOR_PINK)
+                .title("switch failed")
                 .description(format!("Error: {}", e));
             let _ = msg
                 .channel_id
@@ -366,7 +364,7 @@ async fn handle_status(ctx: &Context, msg: &Message, db: &Arc<Db>) {
 
             let embed = CreateEmbed::new()
                 .color(COLOR_GREEN)
-                .title(format!("🟢 {} is working", username))
+                .title(format!("● {}", username))
                 .field("Activity", &session.activity, true)
                 .field("Elapsed", format_duration(elapsed), true)
                 .field("Since", &started, true)
@@ -378,8 +376,8 @@ async fn handle_status(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         }
         _ => {
             let embed = CreateEmbed::new()
-                .color(COLOR_GRAY)
-                .title(format!("😴 {} is offline", username))
+                .color(COLOR_DARK)
+                .title(format!("○ {}", username))
                 .description("`/clock in <activity>`");
             let _ = msg
                 .channel_id
@@ -406,7 +404,7 @@ async fn handle_who(ctx: &Context, msg: &Message, db: &Arc<Db>) {
             }
             let embed = CreateEmbed::new()
                 .color(COLOR_BLUE)
-                .title(format!("🔨 {} currently working", sessions.len()))
+                .title(format!("{} working", sessions.len()))
                 .description(lines)
                 .footer(CreateEmbedFooter::new(swiss_timestamp()));
             let _ = msg
@@ -416,8 +414,8 @@ async fn handle_who(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         }
         _ => {
             let embed = CreateEmbed::new()
-                .color(COLOR_GRAY)
-                .title("😴 Nobody working");
+                .color(COLOR_DARK)
+                .title("nobody working");
             let _ = msg
                 .channel_id
                 .send_message(&ctx.http, CreateMessage::new().embed(embed))
@@ -439,9 +437,9 @@ async fn handle_leaderboard(ctx: &Context, msg: &Message, db: &Arc<Db>) {
 
     let embed = CreateEmbed::new()
         .color(COLOR_GOLD)
-        .title("🏆 Leaderboard")
+        .title("leaderboard")
         .field(
-            format!("📅 This Week ({})", week_label),
+            format!("this week · {}", week_label),
             format!(
                 "{}\n*Total: {}*",
                 weekly_text,
@@ -451,7 +449,7 @@ async fn handle_leaderboard(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         )
         .field("\u{200b}", "\u{200b}", false)
         .field(
-            "⏳ All Time",
+            "all time",
             format!(
                 "{}\n*Total: {}*",
                 alltime_text,
@@ -476,8 +474,8 @@ async fn handle_stats(ctx: &Context, msg: &Message, db: &Arc<Db>) {
 
     if weekly.is_empty() {
         let embed = CreateEmbed::new()
-            .color(COLOR_GRAY)
-            .title("📊 No activity data this week")
+            .color(COLOR_DARK)
+            .title(format!("activity stats · {}", week_label))
             .description("Clock in to start tracking.");
         let _ = msg
             .channel_id
@@ -505,11 +503,11 @@ async fn handle_stats(ctx: &Context, msg: &Message, db: &Arc<Db>) {
     }
 
     let embed = CreateEmbed::new()
-        .color(COLOR_PURPLE)
-        .title(format!("📊 Activity Stats — {}", week_label))
-        .field("🔥 Top Activities", &top_acts, false)
+        .color(COLOR_VIOLET)
+        .title(format!("activity stats · {}", week_label))
+        .field("top activities", &top_acts, false)
         .field("\u{200b}", "\u{200b}", false)
-        .field("👤 Per Person", &breakdown_text, false)
+        .field("per person", &breakdown_text, false)
         .footer(CreateEmbedFooter::new(swiss_timestamp()));
 
     let _ = msg
@@ -623,8 +621,8 @@ async fn handle_rename(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
     // Validate input
     if parts.len() != 2 || parts[0].trim().is_empty() || parts[1].trim().is_empty() {
         let embed = CreateEmbed::new()
-            .color(COLOR_RED)
-            .title("⚠️ Invalid Syntax")
+            .color(COLOR_PINK)
+            .title("invalid syntax")
             .description("Usage: `/clock rename <old activity> > <new activity>`")
             .footer(CreateEmbedFooter::new(swiss_timestamp()));
         let _ = msg
@@ -640,8 +638,8 @@ async fn handle_rename(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
     // Check if they're the same after normalization
     if old_name == new_name {
         let embed = CreateEmbed::new()
-            .color(COLOR_GRAY)
-            .title("ℹ️ Already the Same")
+            .color(COLOR_DARK)
+            .title("already the same")
             .description(format!(
                 "**{}** and **{}** are already the same after normalization.",
                 parts[0].trim(),
@@ -674,7 +672,7 @@ async fn handle_rename(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
 
             let embed = CreateEmbed::new()
                 .color(COLOR_BLUE)
-                .title("✏️ Activity Renamed")
+                .title("renamed")
                 .description(format!("**{}** → **{}**", old_name, new_name))
                 .field("Changes", details, false)
                 .footer(CreateEmbedFooter::new(swiss_timestamp()));
@@ -685,8 +683,8 @@ async fn handle_rename(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
         }
         Err(_) => {
             let embed = CreateEmbed::new()
-                .color(COLOR_RED)
-                .title("⚠️ Activity Not Found")
+                .color(COLOR_PINK)
+                .title("activity not found")
                 .description(format!("No sessions found for **{}**", old_name))
                 .footer(CreateEmbedFooter::new(swiss_timestamp()));
             let _ = msg
@@ -721,8 +719,8 @@ async fn handle_chart(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
         Ok(d) => d,
         Err(e) => {
             let embed = CreateEmbed::new()
-                .color(COLOR_GRAY)
-                .title("📊 Chart Error")
+                .color(COLOR_DARK)
+                .title("chart error")
                 .description(format!("{}", e))
                 .footer(CreateEmbedFooter::new(swiss_timestamp()));
             let _ = msg
@@ -735,8 +733,8 @@ async fn handle_chart(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
 
     if data.users.is_empty() {
         let embed = CreateEmbed::new()
-            .color(COLOR_GRAY)
-            .title("📊 Not Enough Data")
+            .color(COLOR_DARK)
+            .title("not enough data")
             .description(format!(
                 "No time entries found in the last {} week(s).",
                 weeks
@@ -751,8 +749,8 @@ async fn handle_chart(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
 
     if data.week_labels.len() < 2 {
         let embed = CreateEmbed::new()
-            .color(COLOR_GRAY)
-            .title("📊 Not Enough Data")
+            .color(COLOR_DARK)
+            .title("not enough data")
             .description("Need at least 2 weeks of data to draw a chart.")
             .footer(CreateEmbedFooter::new(swiss_timestamp()));
         let _ = msg
@@ -766,8 +764,8 @@ async fn handle_chart(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
         Ok(b) => b,
         Err(e) => {
             let embed = CreateEmbed::new()
-                .color(COLOR_RED)
-                .title("📊 Render Error")
+                .color(COLOR_PINK)
+                .title("render error")
                 .description(format!("Failed to generate chart: {}", e))
                 .footer(CreateEmbedFooter::new(swiss_timestamp()));
             let _ = msg
@@ -785,9 +783,14 @@ async fn handle_chart(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
     let mut user_summary = String::new();
     for (i, user) in data.users.iter().enumerate() {
         let total_min: i64 = user.minutes_per_week.iter().sum();
+        let rank = if i < 3 {
+            format!("{}.", i + 1)
+        } else {
+            "  ".to_string()
+        };
         user_summary += &format!(
             "{} **{}** — {}\n",
-            CHART_MEDALS[i],
+            rank,
             user.username,
             format_duration(total_min)
         );
@@ -795,9 +798,9 @@ async fn handle_chart(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
 
     let embed = CreateEmbed::new()
         .color(COLOR_BLUE)
-        .title(format!("📈 Weekly Hours Chart — {} weeks", weeks))
+        .title(format!("weekly chart · {}w", weeks))
         .description(format!(
-            "**Range:** {} → {}\n**Mode:** {}\n\n{}",
+            "{} → {}  ·  {}\n\n{}",
             first_week, last_week, mode_str, user_summary
         ))
         .image("attachment://chart.png")
@@ -810,5 +813,61 @@ async fn handle_chart(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
             &ctx.http,
             CreateMessage::new().embed(embed).add_file(attachment),
         )
+        .await;
+}
+
+async fn handle_alltime(ctx: &Context, msg: &Message, db: &Arc<Db>) {
+    let alltime = db.activity_breakdown_alltime().unwrap_or_default();
+
+    if alltime.is_empty() {
+        let embed = CreateEmbed::new()
+            .color(COLOR_DARK)
+            .title("all-time stats")
+            .description("No data yet.");
+        let _ = msg
+            .channel_id
+            .send_message(&ctx.http, CreateMessage::new().embed(embed))
+            .await;
+        return;
+    }
+
+    let mut activity_totals: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
+    let mut user_totals: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
+    for e in &alltime {
+        *activity_totals.entry(e.activity.clone()).or_insert(0) += e.total_minutes;
+        *user_totals.entry(e.username.clone()).or_insert(0) += e.total_minutes;
+    }
+
+    let mut sorted_acts: Vec<_> = activity_totals.into_iter().collect();
+    sorted_acts.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let grand_total: i64 = user_totals.values().sum();
+    let max_act = sorted_acts.first().map(|(_, m)| *m).unwrap_or(1);
+
+    let mut top_acts = String::new();
+    for (act, mins) in sorted_acts.iter().take(10) {
+        let bar = make_bar(*mins, max_act);
+        top_acts += &format!("`{}` {} — {}\n", bar, act, format_duration(*mins));
+    }
+
+    let breakdown_text = format_activity_breakdown(&alltime);
+
+    let embed = CreateEmbed::new()
+        .color(COLOR_VIOLET)
+        .title("all-time stats")
+        .description(format!(
+            "```\n{} total · {} people\n```",
+            format_duration(grand_total),
+            user_totals.len()
+        ))
+        .field("top activities", &top_acts, false)
+        .field("per person", &breakdown_text, false)
+        .footer(CreateEmbedFooter::new(swiss_timestamp()));
+
+    let _ = msg
+        .channel_id
+        .send_message(&ctx.http, CreateMessage::new().embed(embed))
         .await;
 }
