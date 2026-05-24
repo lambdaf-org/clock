@@ -96,43 +96,53 @@ fn format_duration(minutes: i64) -> String {
 }
 
 fn make_bar(minutes: i64, max_minutes: i64) -> String {
+    make_bar_width(minutes, max_minutes, BAR_WIDTH)
+}
+
+fn make_bar_width(minutes: i64, max_minutes: i64, width: usize) -> String {
     let ratio = if max_minutes > 0 {
         (minutes as f64 / max_minutes as f64).min(1.0)
     } else {
         0.0
     };
-    let filled = (ratio * BAR_WIDTH as f64).round() as usize;
-    let empty = BAR_WIDTH - filled;
+    let filled = (ratio * width as f64).round() as usize;
+    let empty = width - filled;
     format!("{}{}", BAR_FULL.repeat(filled), BAR_EMPTY.repeat(empty))
 }
 
 fn format_board(entries: &[LeaderboardEntry]) -> String {
     if entries.is_empty() {
-        return "```\nno data yet\n```".into();
+        return "*no data yet*".into();
     }
+
+    const LB_BAR_WIDTH: usize = 12;
+    const MAX_NAME: usize = 16;
 
     let max_min = entries.iter().map(|e| e.total_minutes).max().unwrap_or(1);
-    let max_name_len = entries.iter().map(|e| e.username.len()).max().unwrap_or(8);
 
-    let mut out = String::from("```\n");
+    let mut out = String::new();
     for (i, e) in entries.iter().enumerate() {
-        let rank = if i < 3 {
-            format!("{}.", i + 1)
+        let rank = format!("#{}", i + 1);
+
+        let name: String = if e.username.chars().count() > MAX_NAME {
+            format!("{}…", e.username.chars().take(MAX_NAME - 1).collect::<String>())
         } else {
-            "  ".to_string()
+            e.username.clone()
         };
-        let bar = make_bar(e.total_minutes, max_min);
+
+        // subtle top-3 emphasis via bold
+        let name_fmt = if i < 3 {
+            format!("**{}**", name)
+        } else {
+            name
+        };
+
+        let bar = make_bar_width(e.total_minutes, max_min, LB_BAR_WIDTH);
+
         let dur = format_duration(e.total_minutes);
-        out += &format!(
-            "{} {:<width$}  {}  {}\n",
-            rank,
-            e.username,
-            bar,
-            dur,
-            width = max_name_len
-        );
+        out += &format!("{}  {}   {}   {}\n", rank, name_fmt, bar, dur);
     }
-    out + "```"
+    out
 }
 
 fn format_activity_breakdown(entries: &[ActivityEntry]) -> String {
