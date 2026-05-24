@@ -10,6 +10,7 @@ const HELP: &str = r#"**Commands**
 `/clock who` — who's working
 `/clock leaderboard` — weekly + all-time
 `/clock stats` — activity breakdown
+`/clock alltime` — all-time activity stats for everyone
 `/clock rename <old> > <new>` — rename + merge activity
 `/clock chart [weeks] [totals|cumulative|both]` — line chart of top 5 weekly hours
 `/clock help`"#;
@@ -69,6 +70,8 @@ pub async fn handle_command(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         handle_leaderboard(ctx, msg, db).await;
     } else if rest == "stats" {
         handle_stats(ctx, msg, db).await;
+    } else if rest == "alltime" || rest == "all-time" || rest == "at" {
+        handle_alltime(ctx, msg, db).await;
     } else if rest.starts_with("rename ") {
         let args = rest.strip_prefix("rename ").unwrap().trim();
         handle_rename(ctx, msg, db, args).await;
@@ -318,7 +321,10 @@ async fn handle_switch(ctx: &Context, msg: &Message, db: &Arc<Db>, activity: &st
     match db.clock_in(&user_id, &username, activity) {
         Ok(()) => {
             let desc = if let Some(prev) = prev_activity {
-                format!("**{}** switched from **{}** → **{}**", username, prev, activity)
+                format!(
+                    "**{}** switched from **{}** → **{}**",
+                    username, prev, activity
+                )
             } else {
                 format!("**{}** started working on **{}**", username, activity)
             };
@@ -509,6 +515,96 @@ async fn handle_stats(ctx: &Context, msg: &Message, db: &Arc<Db>) {
     let _ = msg
         .channel_id
         .send_message(&ctx.http, CreateMessage::new().embed(embed))
+        .await;
+}
+
+async fn handle_alltime(ctx: &Context, msg: &Message, db: &Arc<Db>) {
+    let alltime = match db.activity_breakdown_alltime() {
+        Ok(data) => data,
+        Err(_) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_RED)
+                .title("⚠️ Failed to load all-time stats")
+                .description("Please try again in a moment.");
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+            return;
+        }
+    };
+
+    if alltime.is_empty() {
+        let embed = CreateEmbed::new()
+            .color(COLOR_GRAY)
+            .title("⏳ No all-time data yet")
+            .description("Clock in to start tracking.");
+        let _ = msg
+            .channel_id
+            .send_message(&ctx.http, CreateMessage::new().embed(embed))
+            .await;
+        return;
+    }
+
+    // Aggregate top activities and per-user totals across all users
+    let mut activity_totals: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
+    let mut user_totals: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for e in &alltime {
+        *activity_totals.entry(e.activity.clone()).or_insert(0) += e.total_minutes;
+        *user_totals.entry(e.username.clone()).or_insert(0) += e.total_minutes;
+    }
+
+    let grand_total: i64 = user_totals.values().sum();
+    let people_count = user_totals.len();
+
+    // Sort top activities descending
+    let mut sorted_acts: Vec<(String, i64)> = activity_totals.into_iter().collect();
+    sorted_acts.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let max_act = sorted_acts.first().map(|(_, m)| *m).unwrap_or(1);
+
+    // Build top-10 activities bar chart
+    let mut top_acts = String::new();
+    for (act, mins) in sorted_acts.iter().take(10) {
+        let bar = make_bar(*mins, max_act);
+        top_acts += &format!("`{}` {} — {}\n", bar, act, format_duration(*mins));
+    }
+    if top_acts.is_empty() {
+        top_acts = "*No activities found*".to_string();
+    }
+
+    // Embed 1: overview + top activities
+    let embed1 = CreateEmbed::new()
+        .color(COLOR_GOLD)
+        .title("⏳ All-Time Activity Stats")
+        .description(format!(
+            "```\n  {} total across {} people\n```",
+            format_duration(grand_total),
+            people_count,
+        ))
+        .field("🔥 Top Activities (All Time)", &top_acts, false)
+        .footer(CreateEmbedFooter::new(swiss_timestamp()));
+
+    // Embed 2: per-person breakdown (reuse existing formatter)
+    let mut breakdown_text = format_activity_breakdown(&alltime);
+    const MAX_EMBED_DESC_CHARS: usize = 4000;
+    if breakdown_text.chars().count() > MAX_EMBED_DESC_CHARS {
+        let keep = MAX_EMBED_DESC_CHARS.saturating_sub(16);
+        let truncated: String = breakdown_text.chars().take(keep).collect();
+        breakdown_text = format!("{truncated}\n… (truncated)");
+    }
+    let embed2 = CreateEmbed::new()
+        .color(COLOR_PURPLE)
+        .title("👤 Per-Person Breakdown (All Time)")
+        .description(breakdown_text);
+
+    let _ = msg
+        .channel_id
+        .send_message(
+            &ctx.http,
+            CreateMessage::new().add_embeds(vec![embed1, embed2]),
+        )
         .await;
 }
 
