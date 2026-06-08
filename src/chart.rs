@@ -314,6 +314,10 @@ where
     const HEADER_HEIGHT: i32 = 82;
     const ROW_HEIGHT: i32 = 62;
     const ROW_TEXT_Y_OFFSET: i32 = 30;
+    const BAR_RIGHT_MARGIN: i32 = 210;
+    const BAR_MAX_WIDTH: i32 = 180;
+    const BAR_HEIGHT: i32 = 16;
+    const BAR_MIN_FILL_WIDTH: i32 = 2;
     let max_entries = ((h - HEADER_HEIGHT) / ROW_HEIGHT).max(1) as usize;
     let visible = entries.iter().take(max_entries).collect::<Vec<_>>();
     let max_visible_minutes = visible
@@ -322,9 +326,7 @@ where
         .max()
         .unwrap_or(1)
         .max(1);
-    let bar_right = x + w - 210;
-    let bar_max_width = 180;
-    let bar_height = 16;
+    let bar_right = x + w - BAR_RIGHT_MARGIN;
 
     for (idx, entry) in visible.iter().enumerate() {
         let row_y = row_start_y + (idx as i32 * ROW_HEIGHT);
@@ -353,21 +355,21 @@ where
         ))
         .map_err(|e| anyhow::anyhow!("draw name: {:?}", e))?;
 
-        let bar_fill_width =
-            ((entry.total_minutes * bar_max_width as i64) / max_visible_minutes).max(2) as i32;
-        let bar_top = row_y + ROW_TEXT_Y_OFFSET - (bar_height / 2);
+        let bar_fill_width = ((entry.total_minutes * BAR_MAX_WIDTH as i64) / max_visible_minutes)
+            .max(BAR_MIN_FILL_WIDTH as i64) as i32;
+        let bar_top = row_y + ROW_TEXT_Y_OFFSET - (BAR_HEIGHT / 2);
         area.draw(&Rectangle::new(
             [
-                (bar_right - bar_max_width, bar_top),
-                (bar_right, bar_top + bar_height),
+                (bar_right - BAR_MAX_WIDTH, bar_top),
+                (bar_right, bar_top + BAR_HEIGHT),
             ],
             ShapeStyle::from(&PANEL_STROKE.mix(0.9)).filled(),
         ))
         .map_err(|e| anyhow::anyhow!("draw row bar bg: {:?}", e))?;
         area.draw(&Rectangle::new(
             [
-                (bar_right - bar_max_width, bar_top),
-                (bar_right - bar_max_width + bar_fill_width, bar_top + bar_height),
+                (bar_right - BAR_MAX_WIDTH, bar_top),
+                (bar_right - BAR_MAX_WIDTH + bar_fill_width, bar_top + BAR_HEIGHT),
             ],
             ShapeStyle::from(&accent.mix(0.75)).filled(),
         ))
