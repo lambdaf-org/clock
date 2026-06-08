@@ -26,9 +26,14 @@ const MUTED: RGBColor = RGBColor(0x71, 0x71, 0x7a);
 const GRID: RGBColor = RGBColor(0x18, 0x1a, 0x22);
 const PANEL_BG: RGBColor = RGBColor(0x07, 0x08, 0x0c);
 const PANEL_STROKE: RGBColor = RGBColor(0x1a, 0x1c, 0x24);
-const BAR_BG: RGBColor = RGBColor(0x12, 0x14, 0x1b);
 const WEEK_ACCENT: RGBColor = RGBColor(0xd8, 0xe2, 0xff);
 const ALLTIME_ACCENT: RGBColor = RGBColor(0xa7, 0x8b, 0xfa);
+const RANK_GOLD: RGBColor = RGBColor(0xf5, 0xc5, 0x42);
+const RANK_SILVER: RGBColor = RGBColor(0xb2, 0xc8, 0xff);
+const RANK_BRONZE: RGBColor = RGBColor(0xe0, 0x8a, 0x3e);
+const MAX_LEADERBOARD_NAME_CHARS: usize = 20;
+const LEADERBOARD_CONTENT_BOTTOM_Y: i32 = 900;
+const LEADERBOARD_MIN_ALLTIME_HEIGHT: i32 = 240;
 
 // Muted analytics palette.
 const PALETTE: [RGBColor; 5] = [
@@ -185,30 +190,39 @@ pub fn render_leaderboard_card(
         .map_err(|e| anyhow::anyhow!("draw header divider: {:?}", e))?;
 
         let section_w = 1044;
-        let section_h = 340;
         let left = 68;
         let week_top = 182;
-        let alltime_top = 542;
+        let weekly_rows = if weekly.is_empty() {
+            1
+        } else {
+            weekly.len().min(3)
+        } as i32;
+        let week_h = 94 + (weekly_rows * 74);
+        let alltime_top = week_top + week_h + 20;
+        let alltime_h =
+            (LEADERBOARD_CONTENT_BOTTOM_Y - alltime_top).max(LEADERBOARD_MIN_ALLTIME_HEIGHT);
 
         draw_leaderboard_section(
             &root,
             left,
             week_top,
             section_w,
-            section_h,
+            week_h,
             &format!("This week · {}", week_label),
             weekly,
             WEEK_ACCENT,
+            true,
         )?;
         draw_leaderboard_section(
             &root,
             left,
             alltime_top,
             section_w,
-            section_h,
+            alltime_h,
             "All time",
             alltime,
             ALLTIME_ACCENT,
+            false,
         )?;
 
         root.draw(&Text::new(
@@ -244,14 +258,26 @@ fn draw_leaderboard_section<DB>(
     title: &str,
     entries: &[LeaderboardEntry],
     accent: RGBColor,
+    show_momentum: bool,
 ) -> anyhow::Result<()>
 where
     DB: DrawingBackend,
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
 {
+    area.draw(&Rectangle::new(
+        [(x, y), (x + w, y + h)],
+        ShapeStyle::from(&PANEL_BG.mix(0.8)).filled(),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw section bg: {:?}", e))?;
+    area.draw(&Rectangle::new(
+        [(x, y), (x + w, y + h)],
+        ShapeStyle::from(&accent.mix(0.42)).stroke_width(1),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw section border: {:?}", e))?;
+
     area.draw(&Text::new(
         title,
-        (x, y + 38),
+        (x + 24, y + 44),
         ("sans-serif", 32).into_font().color(&FG),
     ))
     .map_err(|e| anyhow::anyhow!("draw section title: {:?}", e))?;
@@ -259,7 +285,7 @@ where
     let total_minutes: i64 = entries.iter().map(|e| e.total_minutes).sum();
     area.draw(&Text::new(
         format!("total · {}", format_duration(total_minutes)),
-        (x + w, y + 38),
+        (x + w - 24, y + 44),
         ("sans-serif", 22)
             .into_font()
             .color(&MUTED)
@@ -267,81 +293,70 @@ where
     ))
     .map_err(|e| anyhow::anyhow!("draw section total: {:?}", e))?;
 
+    area.draw(&PathElement::new(
+        vec![(x + 24, y + 62), (x + w - 24, y + 62)],
+        PANEL_STROKE.mix(0.75).stroke_width(1),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw section divider: {:?}", e))?;
+
     if entries.is_empty() {
         area.draw(&Text::new(
             "No data yet.",
-            (x, y + 104),
-            ("sans-serif", 24).into_font().color(&MUTED),
+            (x + 24, y + 126),
+            ("sans-serif", 30).into_font().color(&MUTED),
         ))
         .map_err(|e| anyhow::anyhow!("draw empty text: {:?}", e))?;
         return Ok(());
     }
 
-    let rank_x = x;
-    let name_x = x + 108;
-    let bar_x = x + 436;
-    let bar_w = w - 646;
-    let dur_x = x + w;
-    let row_start_y = y + 92;
-    const HEADER_HEIGHT: i32 = 108;
-    const ROW_HEIGHT: i32 = 46;
-    const ROW_TEXT_Y_OFFSET: i32 = 22;
-    const BAR_TOP_OFFSET: i32 = 10;
-    const BAR_HEIGHT: i32 = 16;
-    const TOP_RANKS_COUNT: usize = 3;
+    let rank_x = x + 24;
+    let name_x = x + 132;
+    let dur_x = x + w - 24;
+    let row_start_y = y + 86;
+    const HEADER_HEIGHT: i32 = 96;
+    const ROW_HEIGHT: i32 = 72;
+    const ROW_TEXT_Y_OFFSET: i32 = 34;
     let max_entries = ((h - HEADER_HEIGHT) / ROW_HEIGHT).max(1) as usize;
     let visible = entries.iter().take(max_entries).collect::<Vec<_>>();
-    let max_minutes = visible.iter().map(|e| e.total_minutes).max().unwrap_or(1);
 
     for (idx, entry) in visible.iter().enumerate() {
         let row_y = row_start_y + (idx as i32 * ROW_HEIGHT);
-        let ratio = (entry.total_minutes as f64 / max_minutes.max(1) as f64).clamp(0.0, 1.0);
-        let filled = ((bar_w as f64 * ratio).round() as i32).max(1);
-        let rank_color = if idx < TOP_RANKS_COUNT { accent } else { MUTED };
+        let rank_color = rank_color(idx);
+        let rank_label = rank_label(idx);
 
         if idx > 0 {
             area.draw(&PathElement::new(
-                vec![(x, row_y - 12), (x + w, row_y - 12)],
+                vec![(x + 24, row_y - 12), (x + w - 24, row_y - 12)],
                 PANEL_STROKE.mix(0.45).stroke_width(1),
             ))
             .map_err(|e| anyhow::anyhow!("draw row divider: {:?}", e))?;
         }
 
         area.draw(&Text::new(
-            format!("#{}", idx + 1),
+            rank_label,
             (rank_x, row_y + ROW_TEXT_Y_OFFSET),
-            ("sans-serif", 24).into_font().color(&rank_color),
+            ("sans-serif", 38).into_font().color(&rank_color),
         ))
         .map_err(|e| anyhow::anyhow!("draw rank: {:?}", e))?;
 
         area.draw(&Text::new(
-            truncate_name(&entry.username, 18),
+            truncate_name(&entry.username, MAX_LEADERBOARD_NAME_CHARS),
             (name_x, row_y + ROW_TEXT_Y_OFFSET),
-            ("sans-serif", 24).into_font().color(&FG),
+            ("sans-serif", 34).into_font().color(&FG),
         ))
         .map_err(|e| anyhow::anyhow!("draw name: {:?}", e))?;
 
-        area.draw(&Rectangle::new(
-            [
-                (bar_x, row_y + BAR_TOP_OFFSET),
-                (bar_x + bar_w, row_y + BAR_TOP_OFFSET + BAR_HEIGHT),
-            ],
-            ShapeStyle::from(&BAR_BG.mix(0.9)).filled(),
-        ))
-        .map_err(|e| anyhow::anyhow!("draw bar bg: {:?}", e))?;
-        area.draw(&Rectangle::new(
-            [
-                (bar_x, row_y + BAR_TOP_OFFSET),
-                (bar_x + filled, row_y + BAR_TOP_OFFSET + BAR_HEIGHT),
-            ],
-            ShapeStyle::from(&accent.mix(0.72)).filled(),
-        ))
-        .map_err(|e| anyhow::anyhow!("draw bar fg: {:?}", e))?;
-
+        let mut duration = format_duration(entry.total_minutes);
+        if show_momentum {
+            if let Some(emoji) = weekly_momentum_emoji(entry.total_minutes) {
+                duration.push(' ');
+                duration.push_str(emoji);
+            }
+        }
         area.draw(&Text::new(
-            format_duration(entry.total_minutes),
+            duration,
             (dur_x, row_y + ROW_TEXT_Y_OFFSET),
-            ("sans-serif", 22)
+            ("sans-serif", 40)
                 .into_font()
                 .color(&FG)
                 .pos(Pos::new(HPos::Right, VPos::Center)),
@@ -350,6 +365,40 @@ where
     }
 
     Ok(())
+}
+
+fn rank_label(idx: usize) -> String {
+    match idx {
+        0 => "🥇".to_string(),
+        1 => "🥈".to_string(),
+        2 => "🥉".to_string(),
+        _ => format!("#{}", idx + 1),
+    }
+}
+
+fn rank_color(idx: usize) -> RGBColor {
+    match idx {
+        0 => RANK_GOLD,
+        1 => RANK_SILVER,
+        2 => RANK_BRONZE,
+        _ => MUTED,
+    }
+}
+
+/// Weekly-only momentum badge based on current-week minutes:
+/// - >= 10h (600m): 🔥
+/// - >= 4h (240m): 📈
+/// - > 0m: 🌱
+fn weekly_momentum_emoji(total_minutes: i64) -> Option<&'static str> {
+    if total_minutes >= 600 {
+        Some("🔥")
+    } else if total_minutes >= 240 {
+        Some("📈")
+    } else if total_minutes > 0 {
+        Some("🌱")
+    } else {
+        None
+    }
 }
 
 fn draw_panel<DB>(
@@ -573,6 +622,19 @@ mod tests {
         assert_eq!(truncate_name("123456", 6), "123456");
         assert_eq!(truncate_name("1234567", 6), "12345…");
         assert_eq!(truncate_name("überlangername", 5), "über…");
+    }
+
+    #[test]
+    fn test_rank_labels_and_momentum() {
+        assert_eq!(rank_label(0), "🥇");
+        assert_eq!(rank_label(1), "🥈");
+        assert_eq!(rank_label(2), "🥉");
+        assert_eq!(rank_label(3), "#4");
+
+        assert_eq!(weekly_momentum_emoji(0), None);
+        assert_eq!(weekly_momentum_emoji(30), Some("🌱"));
+        assert_eq!(weekly_momentum_emoji(240), Some("📈"));
+        assert_eq!(weekly_momentum_emoji(600), Some("🔥"));
     }
 
     #[test]
