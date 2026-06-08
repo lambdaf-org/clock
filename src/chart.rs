@@ -31,9 +31,10 @@ const ALLTIME_ACCENT: RGBColor = RGBColor(0xa7, 0x8b, 0xfa);
 const RANK_GOLD: RGBColor = RGBColor(0xf5, 0xc5, 0x42);
 const RANK_SILVER: RGBColor = RGBColor(0xb2, 0xc8, 0xff);
 const RANK_BRONZE: RGBColor = RGBColor(0xe0, 0x8a, 0x3e);
-const MAX_LEADERBOARD_NAME_CHARS: usize = 20;
-const LEADERBOARD_CONTENT_BOTTOM_Y: i32 = 900;
-const LEADERBOARD_MIN_ALLTIME_HEIGHT: i32 = 240;
+const MAX_LEADERBOARD_NAME_CHARS: usize = 18;
+const MAX_CHART_LEGEND_CHARS: usize = 14;
+const LEADERBOARD_CONTENT_BOTTOM_Y: i32 = 790;
+const LEADERBOARD_MIN_ALLTIME_HEIGHT: i32 = 220;
 
 // Muted analytics palette.
 const PALETTE: [RGBColor; 5] = [
@@ -149,8 +150,8 @@ pub fn render_leaderboard_card(
     weekly: &[LeaderboardEntry],
     alltime: &[LeaderboardEntry],
 ) -> anyhow::Result<Vec<u8>> {
-    let width: u32 = 1180;
-    let height: u32 = 980;
+    let width: u32 = 1120;
+    let height: u32 = 860;
     let mut pixel_buf = vec![0u8; (width * height * 3) as usize];
 
     {
@@ -159,46 +160,46 @@ pub fn render_leaderboard_card(
             .map_err(|e| anyhow::anyhow!("fill error: {:?}", e))?;
 
         root.draw(&Rectangle::new(
-            [(28, 24), (1152, 920)],
+            [(24, 20), (1096, 806)],
             ShapeStyle::from(&PANEL_BG).filled(),
         ))
         .map_err(|e| anyhow::anyhow!("draw card bg: {:?}", e))?;
         root.draw(&Rectangle::new(
-            [(28, 24), (1152, 920)],
+            [(24, 20), (1096, 806)],
             ShapeStyle::from(&PANEL_STROKE).stroke_width(1),
         ))
         .map_err(|e| anyhow::anyhow!("draw card border: {:?}", e))?;
 
         root.draw(&Text::new(
             "Leaderboard",
-            (68, 86),
-            ("sans-serif", 50).into_font().color(&FG),
+            (56, 70),
+            ("sans-serif", 42).into_font().color(&FG),
         ))
         .map_err(|e| anyhow::anyhow!("draw title: {:?}", e))?;
 
         root.draw(&Text::new(
             "Weekly and all-time tracked hours",
-            (68, 126),
-            ("sans-serif", 24).into_font().color(&MUTED),
+            (56, 104),
+            ("sans-serif", 20).into_font().color(&MUTED),
         ))
         .map_err(|e| anyhow::anyhow!("draw subtitle: {:?}", e))?;
 
         root.draw(&PathElement::new(
-            vec![(68, 160), (1112, 160)],
+            vec![(56, 134), (1064, 134)],
             PANEL_STROKE.mix(0.85).stroke_width(1),
         ))
         .map_err(|e| anyhow::anyhow!("draw header divider: {:?}", e))?;
 
-        let section_w = 1044;
-        let left = 68;
-        let week_top = 182;
+        let section_w = 1008;
+        let left = 56;
+        let week_top = 156;
         let weekly_rows = if weekly.is_empty() {
             1
         } else {
             weekly.len().min(3)
         } as i32;
-        let week_h = 94 + (weekly_rows * 74);
-        let alltime_top = week_top + week_h + 20;
+        let week_h = 82 + (weekly_rows * 66);
+        let alltime_top = week_top + week_h + 18;
         let alltime_h =
             (LEADERBOARD_CONTENT_BOTTOM_Y - alltime_top).max(LEADERBOARD_MIN_ALLTIME_HEIGHT);
 
@@ -211,7 +212,6 @@ pub fn render_leaderboard_card(
             &format!("This week · {}", week_label),
             weekly,
             WEEK_ACCENT,
-            true,
         )?;
         draw_leaderboard_section(
             &root,
@@ -222,13 +222,12 @@ pub fn render_leaderboard_card(
             "All time",
             alltime,
             ALLTIME_ACCENT,
-            false,
         )?;
 
         root.draw(&Text::new(
             "Resets every Monday 00:00 · Europe/Zurich",
-            (68, 956),
-            ("sans-serif", 20).into_font().color(&MUTED),
+            (56, 838),
+            ("sans-serif", 18).into_font().color(&MUTED),
         ))
         .map_err(|e| anyhow::anyhow!("draw footer: {:?}", e))?;
 
@@ -258,7 +257,6 @@ fn draw_leaderboard_section<DB>(
     title: &str,
     entries: &[LeaderboardEntry],
     accent: RGBColor,
-    show_momentum: bool,
 ) -> anyhow::Result<()>
 where
     DB: DrawingBackend,
@@ -278,7 +276,7 @@ where
     area.draw(&Text::new(
         title,
         (x + 24, y + 44),
-        ("sans-serif", 32).into_font().color(&FG),
+        ("sans-serif", 28).into_font().color(&FG),
     ))
     .map_err(|e| anyhow::anyhow!("draw section title: {:?}", e))?;
 
@@ -286,7 +284,7 @@ where
     area.draw(&Text::new(
         format!("total · {}", format_duration(total_minutes)),
         (x + w - 24, y + 44),
-        ("sans-serif", 22)
+        ("sans-serif", 19)
             .into_font()
             .color(&MUTED)
             .pos(Pos::new(HPos::Right, VPos::Center)),
@@ -310,14 +308,23 @@ where
     }
 
     let rank_x = x + 24;
-    let name_x = x + 132;
+    let name_x = x + 120;
     let dur_x = x + w - 24;
-    let row_start_y = y + 86;
-    const HEADER_HEIGHT: i32 = 96;
-    const ROW_HEIGHT: i32 = 72;
-    const ROW_TEXT_Y_OFFSET: i32 = 34;
+    let row_start_y = y + 74;
+    const HEADER_HEIGHT: i32 = 82;
+    const ROW_HEIGHT: i32 = 62;
+    const ROW_TEXT_Y_OFFSET: i32 = 30;
     let max_entries = ((h - HEADER_HEIGHT) / ROW_HEIGHT).max(1) as usize;
     let visible = entries.iter().take(max_entries).collect::<Vec<_>>();
+    let max_visible_minutes = visible
+        .iter()
+        .map(|entry| entry.total_minutes)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let bar_right = x + w - 210;
+    let bar_max_width = 180;
+    let bar_height = 16;
 
     for (idx, entry) in visible.iter().enumerate() {
         let row_y = row_start_y + (idx as i32 * ROW_HEIGHT);
@@ -335,28 +342,41 @@ where
         area.draw(&Text::new(
             rank_label,
             (rank_x, row_y + ROW_TEXT_Y_OFFSET),
-            ("sans-serif", 38).into_font().color(&rank_color),
+            ("sans-serif", 32).into_font().color(&rank_color),
         ))
         .map_err(|e| anyhow::anyhow!("draw rank: {:?}", e))?;
 
         area.draw(&Text::new(
             truncate_name(&entry.username, MAX_LEADERBOARD_NAME_CHARS),
             (name_x, row_y + ROW_TEXT_Y_OFFSET),
-            ("sans-serif", 34).into_font().color(&FG),
+            ("sans-serif", 30).into_font().color(&FG),
         ))
         .map_err(|e| anyhow::anyhow!("draw name: {:?}", e))?;
 
-        let mut duration = format_duration(entry.total_minutes);
-        if show_momentum {
-            if let Some(emoji) = weekly_momentum_emoji(entry.total_minutes) {
-                duration.push(' ');
-                duration.push_str(emoji);
-            }
-        }
+        let bar_fill_width =
+            ((entry.total_minutes * bar_max_width as i64) / max_visible_minutes).max(2) as i32;
+        let bar_top = row_y + ROW_TEXT_Y_OFFSET - (bar_height / 2);
+        area.draw(&Rectangle::new(
+            [
+                (bar_right - bar_max_width, bar_top),
+                (bar_right, bar_top + bar_height),
+            ],
+            ShapeStyle::from(&PANEL_STROKE.mix(0.9)).filled(),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw row bar bg: {:?}", e))?;
+        area.draw(&Rectangle::new(
+            [
+                (bar_right - bar_max_width, bar_top),
+                (bar_right - bar_max_width + bar_fill_width, bar_top + bar_height),
+            ],
+            ShapeStyle::from(&accent.mix(0.75)).filled(),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw row bar fill: {:?}", e))?;
+
         area.draw(&Text::new(
-            duration,
+            format_duration(entry.total_minutes),
             (dur_x, row_y + ROW_TEXT_Y_OFFSET),
-            ("sans-serif", 40)
+            ("sans-serif", 34)
                 .into_font()
                 .color(&FG)
                 .pos(Pos::new(HPos::Right, VPos::Center)),
@@ -369,9 +389,9 @@ where
 
 fn rank_label(idx: usize) -> String {
     match idx {
-        0 => "🥇".to_string(),
-        1 => "🥈".to_string(),
-        2 => "🥉".to_string(),
+        0 => "1st".to_string(),
+        1 => "2nd".to_string(),
+        2 => "3rd".to_string(),
         _ => format!("#{}", idx + 1),
     }
 }
@@ -385,20 +405,8 @@ fn rank_color(idx: usize) -> RGBColor {
     }
 }
 
-/// Weekly-only momentum badge based on current-week minutes:
-/// - >= 10h (600m): 🔥
-/// - >= 4h (240m): 📈
-/// - > 0m: 🌱
-fn weekly_momentum_emoji(total_minutes: i64) -> Option<&'static str> {
-    if total_minutes >= 600 {
-        Some("🔥")
-    } else if total_minutes >= 240 {
-        Some("📈")
-    } else if total_minutes > 0 {
-        Some("🌱")
-    } else {
-        None
-    }
+fn truncate_legend_label(name: &str) -> String {
+    truncate_name(name, MAX_CHART_LEGEND_CHARS)
 }
 
 fn draw_panel<DB>(
@@ -506,7 +514,7 @@ where
         };
 
         // Main line — restrained, no glow.
-        let username = user.username.clone();
+        let username = truncate_legend_label(&user.username);
         chart
             .draw_series(LineSeries::new(
                 points.clone(),
@@ -536,7 +544,7 @@ where
         .configure_series_labels()
         .background_style(PANEL_BG.mix(0.94).filled())
         .border_style(PANEL_STROKE.mix(0.6))
-        .label_font(("sans-serif", 20).into_font().color(&FG))
+        .label_font(("sans-serif", 18).into_font().color(&FG))
         .position(SeriesLabelPosition::UpperLeft)
         .draw()
         .map_err(|e| anyhow::anyhow!("draw legend: {:?}", e))?;
@@ -625,16 +633,17 @@ mod tests {
     }
 
     #[test]
-    fn test_rank_labels_and_momentum() {
-        assert_eq!(rank_label(0), "🥇");
-        assert_eq!(rank_label(1), "🥈");
-        assert_eq!(rank_label(2), "🥉");
+    fn test_rank_labels_and_legend_truncation() {
+        assert_eq!(rank_label(0), "1st");
+        assert_eq!(rank_label(1), "2nd");
+        assert_eq!(rank_label(2), "3rd");
         assert_eq!(rank_label(3), "#4");
 
-        assert_eq!(weekly_momentum_emoji(0), None);
-        assert_eq!(weekly_momentum_emoji(30), Some("🌱"));
-        assert_eq!(weekly_momentum_emoji(240), Some("📈"));
-        assert_eq!(weekly_momentum_emoji(600), Some("🔥"));
+        assert_eq!(truncate_legend_label("Alice"), "Alice");
+        assert_eq!(
+            truncate_legend_label("averyveryverylongusername"),
+            "averyveryvery…"
+        );
     }
 
     #[test]
