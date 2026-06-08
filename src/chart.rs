@@ -74,8 +74,8 @@ pub fn render_chart(data: &ChartData, mode: ChartMode) -> anyhow::Result<Vec<u8>
     }
 
     let (width, height): (u32, u32) = match mode {
-        ChartMode::Both => (1400, 1080),
-        _ => (1400, 620),
+        ChartMode::Both => (1200, 1360),
+        _ => (1200, 760),
     };
 
     // Render to a raw RGB pixel buffer (3 bytes per pixel).
@@ -144,7 +144,7 @@ pub fn render_leaderboard_card(
     weekly: &[LeaderboardEntry],
     alltime: &[LeaderboardEntry],
 ) -> anyhow::Result<Vec<u8>> {
-    let width: u32 = 1440;
+    let width: u32 = 1180;
     let height: u32 = 980;
     let mut pixel_buf = vec![0u8; (width * height * 3) as usize];
 
@@ -154,41 +154,41 @@ pub fn render_leaderboard_card(
             .map_err(|e| anyhow::anyhow!("fill error: {:?}", e))?;
 
         root.draw(&Rectangle::new(
-            [(36, 32), (1404, 920)],
+            [(28, 24), (1152, 920)],
             ShapeStyle::from(&PANEL_BG).filled(),
         ))
         .map_err(|e| anyhow::anyhow!("draw card bg: {:?}", e))?;
         root.draw(&Rectangle::new(
-            [(36, 32), (1404, 920)],
+            [(28, 24), (1152, 920)],
             ShapeStyle::from(&PANEL_STROKE).stroke_width(1),
         ))
         .map_err(|e| anyhow::anyhow!("draw card border: {:?}", e))?;
 
         root.draw(&Text::new(
             "Leaderboard",
-            (80, 92),
-            ("sans-serif", 42).into_font().color(&FG),
+            (68, 86),
+            ("sans-serif", 50).into_font().color(&FG),
         ))
         .map_err(|e| anyhow::anyhow!("draw title: {:?}", e))?;
 
         root.draw(&Text::new(
             "Weekly and all-time tracked hours",
-            (80, 126),
-            ("sans-serif", 19).into_font().color(&MUTED),
+            (68, 126),
+            ("sans-serif", 24).into_font().color(&MUTED),
         ))
         .map_err(|e| anyhow::anyhow!("draw subtitle: {:?}", e))?;
 
         root.draw(&PathElement::new(
-            vec![(80, 156), (1360, 156)],
+            vec![(68, 160), (1112, 160)],
             PANEL_STROKE.mix(0.85).stroke_width(1),
         ))
         .map_err(|e| anyhow::anyhow!("draw header divider: {:?}", e))?;
 
-        let section_w = 1280;
-        let section_h = 330;
-        let left = 80;
-        let week_top = 186;
-        let alltime_top = 534;
+        let section_w = 1044;
+        let section_h = 340;
+        let left = 68;
+        let week_top = 182;
+        let alltime_top = 542;
 
         draw_leaderboard_section(
             &root,
@@ -213,8 +213,8 @@ pub fn render_leaderboard_card(
 
         root.draw(&Text::new(
             "Resets every Monday 00:00 · Europe/Zurich",
-            (80, 954),
-            ("sans-serif", 16).into_font().color(&MUTED),
+            (68, 956),
+            ("sans-serif", 20).into_font().color(&MUTED),
         ))
         .map_err(|e| anyhow::anyhow!("draw footer: {:?}", e))?;
 
@@ -251,16 +251,16 @@ where
 {
     area.draw(&Text::new(
         title,
-        (x, y + 34),
-        ("sans-serif", 24).into_font().color(&FG),
+        (x, y + 38),
+        ("sans-serif", 32).into_font().color(&FG),
     ))
     .map_err(|e| anyhow::anyhow!("draw section title: {:?}", e))?;
 
     let total_minutes: i64 = entries.iter().map(|e| e.total_minutes).sum();
     area.draw(&Text::new(
         format!("total · {}", format_duration(total_minutes)),
-        (x + w, y + 34),
-        ("sans-serif", 18)
+        (x + w, y + 38),
+        ("sans-serif", 22)
             .into_font()
             .color(&MUTED)
             .pos(Pos::new(HPos::Right, VPos::Center)),
@@ -270,21 +270,24 @@ where
     if entries.is_empty() {
         area.draw(&Text::new(
             "No data yet.",
-            (x, y + 92),
-            ("sans-serif", 18).into_font().color(&MUTED),
+            (x, y + 104),
+            ("sans-serif", 24).into_font().color(&MUTED),
         ))
         .map_err(|e| anyhow::anyhow!("draw empty text: {:?}", e))?;
         return Ok(());
     }
 
     let rank_x = x;
-    let name_x = x + 84;
-    let bar_x = x + 376;
-    let bar_w = w - 584;
+    let name_x = x + 108;
+    let bar_x = x + 436;
+    let bar_w = w - 646;
     let dur_x = x + w;
-    let row_start_y = y + 76;
-    const HEADER_HEIGHT: i32 = 92;
-    const ROW_HEIGHT: i32 = 42;
+    let row_start_y = y + 92;
+    const HEADER_HEIGHT: i32 = 108;
+    const ROW_HEIGHT: i32 = 46;
+    const ROW_TEXT_Y_OFFSET: i32 = 22;
+    const BAR_TOP_OFFSET: i32 = 10;
+    const BAR_HEIGHT: i32 = 16;
     const TOP_RANKS_COUNT: usize = 3;
     let max_entries = ((h - HEADER_HEIGHT) / ROW_HEIGHT).max(1) as usize;
     let visible = entries.iter().take(max_entries).collect::<Vec<_>>();
@@ -298,7 +301,7 @@ where
 
         if idx > 0 {
             area.draw(&PathElement::new(
-                vec![(x, row_y - 10), (x + w, row_y - 10)],
+                vec![(x, row_y - 12), (x + w, row_y - 12)],
                 PANEL_STROKE.mix(0.45).stroke_width(1),
             ))
             .map_err(|e| anyhow::anyhow!("draw row divider: {:?}", e))?;
@@ -306,33 +309,39 @@ where
 
         area.draw(&Text::new(
             format!("#{}", idx + 1),
-            (rank_x, row_y + 18),
-            ("sans-serif", 18).into_font().color(&rank_color),
+            (rank_x, row_y + ROW_TEXT_Y_OFFSET),
+            ("sans-serif", 24).into_font().color(&rank_color),
         ))
         .map_err(|e| anyhow::anyhow!("draw rank: {:?}", e))?;
 
         area.draw(&Text::new(
             truncate_name(&entry.username, 18),
-            (name_x, row_y + 18),
-            ("sans-serif", 18).into_font().color(&FG),
+            (name_x, row_y + ROW_TEXT_Y_OFFSET),
+            ("sans-serif", 24).into_font().color(&FG),
         ))
         .map_err(|e| anyhow::anyhow!("draw name: {:?}", e))?;
 
         area.draw(&Rectangle::new(
-            [(bar_x, row_y + 7), (bar_x + bar_w, row_y + 17)],
+            [
+                (bar_x, row_y + BAR_TOP_OFFSET),
+                (bar_x + bar_w, row_y + BAR_TOP_OFFSET + BAR_HEIGHT),
+            ],
             ShapeStyle::from(&BAR_BG.mix(0.9)).filled(),
         ))
         .map_err(|e| anyhow::anyhow!("draw bar bg: {:?}", e))?;
         area.draw(&Rectangle::new(
-            [(bar_x, row_y + 7), (bar_x + filled, row_y + 17)],
+            [
+                (bar_x, row_y + BAR_TOP_OFFSET),
+                (bar_x + filled, row_y + BAR_TOP_OFFSET + BAR_HEIGHT),
+            ],
             ShapeStyle::from(&accent.mix(0.72)).filled(),
         ))
         .map_err(|e| anyhow::anyhow!("draw bar fg: {:?}", e))?;
 
         area.draw(&Text::new(
             format_duration(entry.total_minutes),
-            (dur_x, row_y + 18),
-            ("sans-serif", 18)
+            (dur_x, row_y + ROW_TEXT_Y_OFFSET),
+            ("sans-serif", 22)
                 .into_font()
                 .color(&FG)
                 .pos(Pos::new(HPos::Right, VPos::Center)),
@@ -355,10 +364,10 @@ where
 {
     let n_weeks = data.week_labels.len();
     let (area_w, area_h) = area.dim_in_pixel();
-    let card_left = 34;
-    let card_top = 26;
-    let card_right = area_w as i32 - 34;
-    let card_bottom = area_h as i32 - 28;
+    let card_left = 22;
+    let card_top = 18;
+    let card_right = area_w as i32 - 22;
+    let card_bottom = area_h as i32 - 20;
 
     area.draw(&Rectangle::new(
         [(card_left, card_top), (card_right, card_bottom)],
@@ -394,13 +403,13 @@ where
     let x_max = (n_weeks - 1) as i32;
 
     // Show at most 8 X tick labels.
-    let label_count = n_weeks.min(8);
+    let label_count = n_weeks.min(6);
 
     let mut chart = ChartBuilder::on(area)
-        .caption(title, ("sans-serif", 24).into_font().color(&FG))
-        .margin(58)
-        .x_label_area_size(46)
-        .y_label_area_size(58)
+        .caption(title, ("sans-serif", 34).into_font().color(&FG))
+        .margin(44)
+        .x_label_area_size(72)
+        .y_label_area_size(86)
         .build_cartesian_2d(0i32..x_max, 0.0f64..y_max)
         .map_err(|e| anyhow::anyhow!("build chart: {:?}", e))?;
 
@@ -412,15 +421,15 @@ where
         .light_line_style(GRID.mix(0.35))
         .axis_style(MUTED.mix(0.0)) // fully transparent — no visible axis line
         .x_labels(label_count)
-        .y_labels(5)
-        .x_label_style(("sans-serif", 13).into_font().color(&MUTED))
+        .y_labels(6)
+        .x_label_style(("sans-serif", 20).into_font().color(&MUTED))
         .x_label_formatter(&|x| {
             week_labels
                 .get(*x as usize)
                 .map(|s| short_week_label(s))
                 .unwrap_or_default()
         })
-        .y_label_style(("sans-serif", 13).into_font().color(&MUTED))
+        .y_label_style(("sans-serif", 20).into_font().color(&MUTED))
         .y_label_formatter(&|y| format!("{:.0}h", y))
         .draw()
         .map_err(|e| anyhow::anyhow!("configure mesh: {:?}", e))?;
@@ -450,18 +459,24 @@ where
         // Main line — restrained, no glow.
         let username = user.username.clone();
         chart
-            .draw_series(LineSeries::new(points.clone(), color.mix(0.82).stroke_width(2)))
+            .draw_series(LineSeries::new(
+                points.clone(),
+                color.mix(0.82).stroke_width(4),
+            ))
             .map_err(|e| anyhow::anyhow!("draw line: {:?}", e))?
             .label(username)
             .legend(move |(lx, ly)| {
-                PathElement::new(vec![(lx, ly), (lx + 22, ly)], color.mix(0.82).stroke_width(2))
+                PathElement::new(
+                    vec![(lx, ly), (lx + 34, ly)],
+                    color.mix(0.82).stroke_width(4),
+                )
             });
 
         if let Some(&last_pt) = points.last() {
             chart
                 .draw_series(std::iter::once(Circle::new(
                     last_pt,
-                    3,
+                    6,
                     color.mix(0.82).filled(),
                 )))
                 .map_err(|e| anyhow::anyhow!("draw endpoint: {:?}", e))?;
@@ -472,7 +487,7 @@ where
         .configure_series_labels()
         .background_style(PANEL_BG.mix(0.94).filled())
         .border_style(PANEL_STROKE.mix(0.6))
-        .label_font(("sans-serif", 14).into_font().color(&FG))
+        .label_font(("sans-serif", 20).into_font().color(&FG))
         .position(SeriesLabelPosition::UpperLeft)
         .draw()
         .map_err(|e| anyhow::anyhow!("draw legend: {:?}", e))?;
@@ -508,7 +523,7 @@ mod tests {
 
     fn register_test_font() {
         static FONT: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
-        use plotters::style::{FontStyle, register_font};
+        use plotters::style::{register_font, FontStyle};
         for style in [
             FontStyle::Normal,
             FontStyle::Bold,
@@ -617,8 +632,7 @@ mod tests {
         register_test_font();
         let weekly = sample_leaderboard();
         let alltime = sample_leaderboard();
-        let bytes =
-            render_leaderboard_card("KW21/2026", &weekly, &alltime).expect("render failed");
+        let bytes = render_leaderboard_card("KW21/2026", &weekly, &alltime).expect("render failed");
         assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
         assert!(bytes.len() > 10_000, "leaderboard card PNG seems too small");
     }
