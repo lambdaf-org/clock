@@ -31,6 +31,9 @@ const ALLTIME_ACCENT: RGBColor = RGBColor(0xa7, 0x8b, 0xfa);
 const RANK_GOLD: RGBColor = RGBColor(0xf5, 0xc5, 0x42);
 const RANK_SILVER: RGBColor = RGBColor(0xb2, 0xc8, 0xff);
 const RANK_BRONZE: RGBColor = RGBColor(0xe0, 0x8a, 0x3e);
+const MAX_LEADERBOARD_NAME_CHARS: usize = 20;
+const LEADERBOARD_CONTENT_BOTTOM_Y: i32 = 900;
+const LEADERBOARD_MIN_ALLTIME_HEIGHT: i32 = 240;
 
 // Muted analytics palette.
 const PALETTE: [RGBColor; 5] = [
@@ -189,11 +192,15 @@ pub fn render_leaderboard_card(
         let section_w = 1044;
         let left = 68;
         let week_top = 182;
-        let content_bottom = 900;
-        let weekly_rows = weekly.len().clamp(1, 3) as i32;
+        let weekly_rows = if weekly.is_empty() {
+            1
+        } else {
+            weekly.len().min(3)
+        } as i32;
         let week_h = 94 + (weekly_rows * 74);
         let alltime_top = week_top + week_h + 20;
-        let alltime_h = (content_bottom - alltime_top).max(240);
+        let alltime_h =
+            (LEADERBOARD_CONTENT_BOTTOM_Y - alltime_top).max(LEADERBOARD_MIN_ALLTIME_HEIGHT);
 
         draw_leaderboard_section(
             &root,
@@ -333,7 +340,7 @@ where
         .map_err(|e| anyhow::anyhow!("draw rank: {:?}", e))?;
 
         area.draw(&Text::new(
-            truncate_name(&entry.username, 20),
+            truncate_name(&entry.username, MAX_LEADERBOARD_NAME_CHARS),
             (name_x, row_y + ROW_TEXT_Y_OFFSET),
             ("sans-serif", 34).into_font().color(&FG),
         ))
@@ -378,6 +385,10 @@ fn rank_color(idx: usize) -> RGBColor {
     }
 }
 
+/// Weekly-only momentum badge based on current-week minutes:
+/// - >= 10h (600m): 🔥
+/// - >= 4h (240m): 📈
+/// - > 0m: 🌱
 fn weekly_momentum_emoji(total_minutes: i64) -> Option<&'static str> {
     if total_minutes >= 600 {
         Some("🔥")
