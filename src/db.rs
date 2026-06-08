@@ -210,7 +210,7 @@ impl Db {
         let monday = monday_of_current_week();
         let mut stmt = conn.prepare(
             "SELECT username, SUM(minutes) as total FROM sessions
-             WHERE ended_at IS NOT NULL AND started_at >= ?1
+             WHERE ended_at IS NOT NULL AND ended_at >= ?1
              GROUP BY user_id ORDER BY total DESC LIMIT 15",
         )?;
         let rows = stmt.query_map(params![monday], |r| {
@@ -269,7 +269,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT username, activity, SUM(minutes) as total, COUNT(*) as sessions
              FROM sessions
-             WHERE ended_at IS NOT NULL AND started_at >= ?1
+             WHERE ended_at IS NOT NULL AND ended_at >= ?1
              GROUP BY user_id, activity
              ORDER BY username ASC, total DESC",
         )?;
@@ -317,7 +317,7 @@ impl Db {
         // Total hours, total sessions, unique workers
         let (total_min, total_sessions, unique_workers): (i64, i64, i64) = conn.query_row(
             "SELECT COALESCE(SUM(minutes),0), COUNT(*), COUNT(DISTINCT user_id)
-             FROM sessions WHERE ended_at IS NOT NULL AND started_at >= ?1",
+             FROM sessions WHERE ended_at IS NOT NULL AND ended_at >= ?1",
             params![monday],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
@@ -326,7 +326,7 @@ impl Db {
         let mvp: Option<(String, i64)> = conn
             .query_row(
                 "SELECT username, SUM(minutes) as total FROM sessions
-             WHERE ended_at IS NOT NULL AND started_at >= ?1
+             WHERE ended_at IS NOT NULL AND ended_at >= ?1
              GROUP BY user_id ORDER BY total DESC LIMIT 1",
                 params![monday],
                 |r| Ok((r.get(0)?, r.get(1)?)),
@@ -337,7 +337,7 @@ impl Db {
         let top_activity: Option<(String, i64)> = conn
             .query_row(
                 "SELECT activity, SUM(minutes) as total FROM sessions
-             WHERE ended_at IS NOT NULL AND started_at >= ?1
+             WHERE ended_at IS NOT NULL AND ended_at >= ?1
              GROUP BY activity ORDER BY total DESC LIMIT 1",
                 params![monday],
                 |r| Ok((r.get(0)?, r.get(1)?)),
@@ -348,7 +348,7 @@ impl Db {
         let longest_session: Option<(String, String, i64)> = conn
             .query_row(
                 "SELECT username, activity, minutes FROM sessions
-             WHERE ended_at IS NOT NULL AND started_at >= ?1
+             WHERE ended_at IS NOT NULL AND ended_at >= ?1
              ORDER BY minutes DESC LIMIT 1",
                 params![monday],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -358,7 +358,7 @@ impl Db {
         // Per-person breakdown
         let mut stmt = conn.prepare(
             "SELECT username, activity, SUM(minutes) as total
-             FROM sessions WHERE ended_at IS NOT NULL AND started_at >= ?1
+             FROM sessions WHERE ended_at IS NOT NULL AND ended_at >= ?1
              GROUP BY user_id, activity ORDER BY username ASC, total DESC",
         )?;
         let rows = stmt.query_map(params![monday], |r| {
@@ -691,7 +691,7 @@ impl Db {
         // ── Current week: pull from sessions ──────────────────────────────
         let mut stmt = conn.prepare(
             "SELECT user_id, username, SUM(minutes) as total FROM sessions \
-             WHERE ended_at IS NOT NULL AND started_at >= ?1 \
+             WHERE ended_at IS NOT NULL AND ended_at >= ?1 \
              GROUP BY user_id",
         )?;
         let rows = stmt.query_map(params![monday], |r| {
@@ -748,7 +748,7 @@ impl Db {
             "SELECT user_id, username, activity, SUM(minutes) as total
              FROM sessions
              WHERE ended_at IS NOT NULL
-               AND started_at >= ?1
+               AND ended_at >= ?1
              GROUP BY user_id, activity
              ORDER BY user_id ASC, total DESC",
         )?;
@@ -1037,6 +1037,114 @@ mod tests {
             )
             .unwrap();
         assert_eq!(user2_activity, "boring work");
+    }
+
+    #[test]
+    fn test_current_week_queries_count_sessions_by_ended_at() {
+        let (db, _temp_dir) = setup_test_db();
+        let monday = monday_of_current_week();
+        let monday_dt = NaiveDateTime::parse_from_str(&monday, "%Y-%m-%d %H:%M:%S").unwrap();
+
+        let crossing_started = (monday_dt - Duration::hours(2))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let crossing_ended = (monday_dt + Duration::hours(2))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let in_week_started = (monday_dt + Duration::hours(5))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let in_week_ended = (monday_dt + Duration::hours(6))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let old_started = (monday_dt - Duration::hours(5))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let old_ended = (monday_dt - Duration::hours(4))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO sessions (user_id, username, activity, started_at, ended_at, minutes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params!["u1", "Alice", "deep work", crossing_started, crossing_ended, 120i64],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (user_id, username, activity, started_at, ended_at, minutes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params!["u2", "Bob", "meeting", in_week_started, in_week_ended, 60i64],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (user_id, username, activity, started_at, ended_at, minutes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params!["u3", "Carol", "review", old_started, old_ended, 30i64],
+            )
+            .unwrap();
+        }
+
+        let leaderboard = db.leaderboard_weekly().unwrap();
+        assert_eq!(leaderboard.len(), 2);
+        assert_eq!(leaderboard[0].username, "Alice");
+        assert_eq!(leaderboard[0].total_minutes, 120);
+        assert_eq!(leaderboard[1].username, "Bob");
+        assert_eq!(leaderboard[1].total_minutes, 60);
+
+        let breakdown = db.activity_breakdown_weekly().unwrap();
+        assert_eq!(breakdown.len(), 2);
+        assert!(
+            breakdown
+                .iter()
+                .any(|e| e.username == "Alice"
+                    && e.activity == "deep work"
+                    && e.total_minutes == 120
+                    && e.session_count == 1)
+        );
+        assert!(
+            breakdown
+                .iter()
+                .any(|e| e.username == "Bob"
+                    && e.activity == "meeting"
+                    && e.total_minutes == 60
+                    && e.session_count == 1)
+        );
+
+        let summary = db.weekly_summary().unwrap();
+        assert_eq!(summary.total_minutes, 180);
+        assert_eq!(summary.total_sessions, 2);
+        assert_eq!(summary.unique_workers, 2);
+        assert_eq!(summary.mvp, Some(("Alice".to_string(), 120)));
+        assert_eq!(summary.top_activity, Some(("deep work".to_string(), 120)));
+        assert_eq!(
+            summary.longest_session,
+            Some(("Alice".to_string(), "deep work".to_string(), 120))
+        );
+        assert_eq!(summary.breakdown.len(), 2);
+
+        let chart = db.weekly_hours_for_chart(1).unwrap();
+        assert_eq!(chart.week_labels.len(), 1);
+        assert_eq!(chart.users.len(), 2);
+        assert_eq!(chart.users[0].username, "Alice");
+        assert_eq!(chart.users[0].minutes_per_week, vec![120]);
+        assert_eq!(chart.users[1].username, "Bob");
+        assert_eq!(chart.users[1].minutes_per_week, vec![60]);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let user_breakdown = rt.block_on(db.user_activity_breakdown_weekly()).unwrap();
+        assert_eq!(user_breakdown.len(), 2);
+        assert!(
+            user_breakdown
+                .iter()
+                .any(|e| e.user_id == "u1" && e.activity == "deep work" && e.total_minutes == 120)
+        );
+        assert!(
+            user_breakdown
+                .iter()
+                .any(|e| e.user_id == "u2" && e.activity == "meeting" && e.total_minutes == 60)
+        );
     }
 
     #[test]
