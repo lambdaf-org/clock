@@ -47,6 +47,24 @@ The bot creates `clock.db` in the working directory on first run.
 
 Weekly stats archive automatically every Monday at 00:00 (Europe/Zurich).
 
+## One-time username fold
+
+The Docker image includes a startup hook for the one-time Discord username repair where rows for `x_` should be folded into `x`.
+
+Set `CLOCK_FOLD_USERNAME_TARGET` to the canonical username. By default the source is `<target>_`:
+
+```bash
+CLOCK_FOLD_USERNAME_TARGET=x
+```
+
+To use an explicit source username:
+
+```bash
+CLOCK_FOLD_USERNAME_TARGET=x CLOCK_FOLD_USERNAME_SOURCE=x_
+```
+
+The entrypoint runs the fold against `/data/clock.db` before starting the bot. Override that path with `CLOCK_DB_PATH` if needed. The script stores a marker in the `metadata` table, so the same fold is skipped on later container starts.
+
 ## Deployment
 
 The included `Dockerfile` produces a slim runtime image. Charts are rendered with
