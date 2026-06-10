@@ -7,15 +7,20 @@ DB_PATH="${CLOCK_DB_PATH:-/data/clock.db}"
 # another. It is keyed by user_id (the stable Discord account id), because the
 # username column holds the mutable display name. Configure with CLOCK_MERGE_*:
 #
-#   CLOCK_MERGE_INTO_ID / CLOCK_MERGE_FROM_ID      (recommended, unambiguous)
-#   CLOCK_MERGE_INTO_NAME / CLOCK_MERGE_FROM_NAME  (resolved to a single id, else it skips)
-#   CLOCK_MERGE_NAME                               (optional canonical display name)
+#   CLOCK_MERGE_DEDUPE_NAME                        merge all accounts that share
+#                                                  this display name into one
+#                                                  (use when two leaderboard rows
+#                                                  show the same name)
+#   CLOCK_MERGE_INTO_ID / CLOCK_MERGE_FROM_ID      merge two specific accounts
+#   CLOCK_MERGE_INTO_NAME / CLOCK_MERGE_FROM_NAME  same, by name (must be unique)
+#   CLOCK_MERGE_NAME                               optional canonical display name
 #
 # Guarded so the migration can never stop the bot from starting.
-if [ -n "${CLOCK_MERGE_INTO_ID:-}${CLOCK_MERGE_INTO_NAME:-}" ] \
-  && [ -n "${CLOCK_MERGE_FROM_ID:-}${CLOCK_MERGE_FROM_NAME:-}" ]; then
+if [ -n "${CLOCK_MERGE_DEDUPE_NAME:-}" ] \
+  || { [ -n "${CLOCK_MERGE_INTO_ID:-}${CLOCK_MERGE_INTO_NAME:-}" ] && [ -n "${CLOCK_MERGE_FROM_ID:-}${CLOCK_MERGE_FROM_NAME:-}" ]; }; then
   if [ -f "$DB_PATH" ]; then
     MERGE_ARGS=""
+    [ -n "${CLOCK_MERGE_DEDUPE_NAME:-}" ] && MERGE_ARGS="$MERGE_ARGS --dedupe-name ${CLOCK_MERGE_DEDUPE_NAME}"
     [ -n "${CLOCK_MERGE_INTO_ID:-}" ]   && MERGE_ARGS="$MERGE_ARGS --into-id ${CLOCK_MERGE_INTO_ID}"
     [ -n "${CLOCK_MERGE_INTO_NAME:-}" ] && MERGE_ARGS="$MERGE_ARGS --into-name ${CLOCK_MERGE_INTO_NAME}"
     [ -n "${CLOCK_MERGE_FROM_ID:-}" ]   && MERGE_ARGS="$MERGE_ARGS --from-id ${CLOCK_MERGE_FROM_ID}"

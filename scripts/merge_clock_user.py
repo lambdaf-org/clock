@@ -26,14 +26,21 @@ Safety
 It touches: sessions, weekly_archive, activity_archive.
 
 Usage:
-    # by Discord user_id (recommended, unambiguous)
+    # see every account and any display name shared by more than one account
+    merge_clock_user.py /data/clock.db --list
+
+    # two leaderboard rows show the SAME name: merge them in one shot
+    # (folds every account with this name into the one with the most hours)
+    merge_clock_user.py /data/clock.db --dedupe-name Thirsty
+
+    # merge two specific accounts by Discord user_id (unambiguous)
     merge_clock_user.py /data/clock.db --into-id 111 --from-id 222 --name x
 
-    # by display name (resolved to a single user_id each, else it safely skips)
+    # by display name (each must resolve to a single user_id, else it skips)
     merge_clock_user.py /data/clock.db --into-name x --from-name x_
 
     # preview only
-    merge_clock_user.py /data/clock.db --into-id 111 --from-id 222 --dry-run
+    merge_clock_user.py /data/clock.db --dedupe-name Thirsty --dry-run
 """
 
 from __future__ import annotations
@@ -143,6 +150,86 @@ def merge_dupes(conn: sqlite3.Connection, table: str, key_cols: tuple[str, ...])
     return deleted
 
 
+def total_minutes(conn: sqlite3.Connection, uid: str) -> int:
+    s = conn.execute(
+        "SELECT COALESCE(SUM(minutes),0) FROM sessions WHERE user_id=? AND ended_at IS NOT NULL",
+        (uid,),
+    ).fetchone()[0]
+    w = conn.execute(
+        "SELECT COALESCE(SUM(total_min),0) FROM weekly_archive WHERE user_id=?", (uid,)
+    ).fetchone()[0]
+    return int(s) + int(w)
+
+
+def perform_merge(conn, target_uid, source_uids, canonical, dry_run) -> None:
+    ids = list(dict.fromkeys([target_uid, *source_uids]))
+    placeholders = ",".join("?" * len(ids))
+    conn.execute("BEGIN")
+    for table in TABLES:
+        n = conn.execute(
+            f"UPDATE {table} SET user_id=?, username=? WHERE user_id IN ({placeholders})",
+            (target_uid, canonical, *ids),
+        ).rowcount
+        log(f"{table}: {n} rows now under {target_uid} as {canonical!r}")
+    wm = merge_dupes(conn, "weekly_archive", ("user_id", "week_label"))
+    am = merge_dupes(conn, "activity_archive", ("user_id", "week_label", "activity"))
+    log(f"weekly_archive duplicates merged: {wm}; activity_archive duplicates merged: {am}")
+    if dry_run:
+        conn.rollback()
+        log("dry run: rolled back, no changes written")
+    else:
+        conn.commit()
+        log("committed")
+
+
+def do_list(conn: sqlite3.Connection) -> None:
+    """Print every account (user_id) with its hours and the display names seen,
+    and call out any display name shared by more than one account."""
+    rows = conn.execute(
+        """
+        SELECT user_id, GROUP_CONCAT(DISTINCT username) FROM (
+            SELECT user_id, username FROM sessions
+            UNION SELECT user_id, username FROM weekly_archive
+            UNION SELECT user_id, username FROM activity_archive
+        ) GROUP BY user_id
+        """
+    ).fetchall()
+    data = [(uid, total_minutes(conn, uid), names or "") for uid, names in rows]
+    log("accounts (user_id | total | display names seen):")
+    for uid, mins, names in sorted(data, key=lambda r: -r[1]):
+        log(f"  {uid} | {mins / 60:.1f}h | {names}")
+    from collections import defaultdict
+
+    by_name: dict[str, set[str]] = defaultdict(set)
+    for uid, _, names in data:
+        for nm in names.split(","):
+            if nm:
+                by_name[nm].add(uid)
+    dups = {nm: us for nm, us in by_name.items() if len(us) > 1}
+    if dups:
+        log("duplicate display names (one name, several accounts):")
+        for nm, us in dups.items():
+            log(f"  {nm!r}: user_ids {sorted(us)}  ->  merge with --dedupe-name {nm}")
+    else:
+        log("no duplicate display names found")
+
+
+def do_dedupe_name(conn: sqlite3.Connection, name: str, dry_run: bool) -> None:
+    """Merge every account sharing this display name into the one with the most
+    hours. The right tool when two leaderboard rows show the same name (so they
+    cannot be told apart by name) but are one person."""
+    uids = uids_for_name(conn, name)
+    if len(uids) < 2:
+        log(f"dedupe {name!r}: maps to {len(uids)} account(s), nothing to merge")
+        return
+    totals = {u: total_minutes(conn, u) for u in uids}
+    target = max(uids, key=lambda u: totals[u])
+    sources = [u for u in uids if u != target]
+    log(f"dedupe {name!r}: " + ", ".join(f"{u}={totals[u] / 60:.1f}h" for u in uids))
+    log(f"dedupe {name!r}: keeping {target}, folding {sources} into it")
+    perform_merge(conn, target, sources, name, dry_run)
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Merge one ClockBot user's rows into another, by user_id.")
     p.add_argument("db", type=Path)
@@ -151,11 +238,14 @@ def main() -> int:
     p.add_argument("--from-id")
     p.add_argument("--from-name")
     p.add_argument("--name", help="Canonical display name to set on the merged account.")
+    p.add_argument("--dedupe-name", help="Merge every account sharing this display name into the one with the most hours.")
+    p.add_argument("--list", action="store_true", help="List accounts and any duplicate display names, then exit.")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
 
-    if not (args.into_id or args.into_name) or not (args.from_id or args.from_name):
-        log("nothing to do: need a target (--into-id/--into-name) and a source (--from-id/--from-name)")
+    has_pair = (args.into_id or args.into_name) and (args.from_id or args.from_name)
+    if not args.list and not args.dedupe_name and not has_pair:
+        log("nothing to do: pass --list, or --dedupe-name NAME, or both --into-* and --from-*")
         return 0
     if not args.db.exists():
         log(f"database not found at {args.db}, skipping")
@@ -165,6 +255,13 @@ def main() -> int:
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         ensure_metadata(conn)
+
+        if args.list:
+            do_list(conn)
+            return 0
+        if args.dedupe_name:
+            do_dedupe_name(conn, args.dedupe_name, args.dry_run)
+            return 0
 
         target_uid, t_status = resolve(conn, "into", args.into_id, args.into_name)
         source_uid, s_status = resolve(conn, "from", args.from_id, args.from_name)
