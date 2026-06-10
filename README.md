@@ -70,6 +70,17 @@ The bot opens its database at `/data/clock.db`, so make sure that path is writab
 /clock help                                   command list
 ```
 
+### `/clock user` details
+
+Renders a per-user profile card showing what that person spends time on:
+total / this-week / best-week / active-weeks stats, an all-time activity
+breakdown with share percentages, a 12-week trend, and the live session if
+they are clocked in right now.
+
+- `/clock user` or `/clock me` — your own profile
+- `/clock user @mention` — profile of the mentioned user
+- `/clock user <name>` — lookup by tracked username (case-insensitive, prefix works)
+
 ### `/clock chart` details
 
 - `weeks`: number of weeks to plot (1 to 52, default `12`)

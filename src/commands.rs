@@ -11,6 +11,7 @@ const HELP: &str = r#"**Commands**
 `/clock leaderboard` — weekly + all-time
 `/clock stats` — activity breakdown
 `/clock alltime` — all-time activity stats for everyone
+`/clock user [@user|name]` — activity profile card (`/clock me` for yours)
 `/clock rename <old> > <new>` — rename + merge activity
 `/clock chart [weeks] [totals|cumulative|both]` — line chart of top 5 weekly hours
 `/clock help`"#;
@@ -74,6 +75,9 @@ pub async fn handle_command(ctx: &Context, msg: &Message, db: &Arc<Db>) {
         handle_stats(ctx, msg, db).await;
     } else if rest == "alltime" || rest == "all-time" || rest == "at" {
         handle_alltime(ctx, msg, db).await;
+    } else if rest == "me" || rest == "user" || rest.starts_with("user ") {
+        let args = rest.strip_prefix("user").map(str::trim).unwrap_or("");
+        handle_user(ctx, msg, db, args).await;
     } else if rest.starts_with("rename ") {
         let args = rest.strip_prefix("rename ").unwrap().trim();
         handle_rename(ctx, msg, db, args).await;
@@ -633,6 +637,185 @@ async fn handle_alltime(ctx: &Context, msg: &Message, db: &Arc<Db>) {
             CreateMessage::new().add_embeds(vec![embed1, embed2]),
         )
         .await;
+}
+
+const PROFILE_TREND_WEEKS: u32 = 12;
+
+/// Extract the user id from mention syntax (`<@123>` / `<@!123>`).
+/// Returns None unless the whole argument is a single mention.
+fn parse_mention_arg(args: &str) -> Option<&str> {
+    let inner = args.strip_prefix("<@")?.strip_suffix('>')?;
+    let inner = inner.strip_prefix('!').unwrap_or(inner);
+    (!inner.is_empty() && inner.bytes().all(|b| b.is_ascii_digit())).then_some(inner)
+}
+
+async fn handle_user(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {
+    let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
+
+    // Resolve the target from the command text only — msg.mentions also
+    // contains the replied-to author when someone replies with a ping, which
+    // must not hijack the target. Display name from Discord when we have it;
+    // name lookups keep the most recent stored username from the profile.
+    let resolved: Result<Option<(String, Option<String>)>, anyhow::Error> =
+        if let Some(mention_id) = parse_mention_arg(args) {
+            let display = msg
+                .mentions
+                .iter()
+                .find(|u| u.id.to_string() == mention_id)
+                .map(|u| u.display_name().to_string());
+            Ok(Some((mention_id.to_string(), display)))
+        } else if !args.is_empty() {
+            db.resolve_user(args)
+                .map(|hit| hit.map(|(user_id, _)| (user_id, None)))
+        } else {
+            Ok(Some((
+                msg.author.id.to_string(),
+                Some(msg.author.display_name().to_string()),
+            )))
+        };
+
+    let target = match resolved {
+        Ok(t) => t,
+        Err(e) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_PINK)
+                .title("profile unavailable")
+                .description(format!("{}", e))
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+            return;
+        }
+    };
+
+    let Some((user_id, display_override)) = target else {
+        let embed = CreateEmbed::new()
+            .color(COLOR_DARK)
+            .title("user not found")
+            .description(format!("No tracked time found for **{}**.", args))
+            .footer(CreateEmbedFooter::new(swiss_timestamp()));
+        let _ = msg
+            .channel_id
+            .send_message(&ctx.http, CreateMessage::new().embed(embed))
+            .await;
+        return;
+    };
+
+    let display_name = display_override.clone().unwrap_or_else(|| {
+        if args.is_empty() { "you".to_string() } else { args.to_string() }
+    });
+    let profile = match db.user_profile(&user_id, PROFILE_TREND_WEEKS) {
+        Ok(Some(mut profile)) => {
+            if let Some(name) = display_override {
+                profile.username = name;
+            }
+            profile
+        }
+        Ok(None) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_DARK)
+                .title(format!("profile · {}", display_name))
+                .description("No tracked time yet. `/clock in <activity>` to start.")
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+            return;
+        }
+        Err(e) => {
+            let embed = CreateEmbed::new()
+                .color(COLOR_PINK)
+                .title("profile unavailable")
+                .description(format!("{}", e))
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+            return;
+        }
+    };
+
+    match crate::chart::render_user_card(&profile) {
+        Ok(png_bytes) => {
+            let mut desc = format!(
+                "{} all time · {} this week",
+                format_duration(profile.total_minutes),
+                format_duration(profile.current_week_minutes),
+            );
+            if let Some((activity, elapsed)) = &profile.active_session {
+                desc += &format!(
+                    "\nworking on {} for {}",
+                    activity,
+                    format_duration(*elapsed)
+                );
+            }
+            let embed = CreateEmbed::new()
+                .color(COLOR_VIOLET)
+                .title(format!("profile · {}", profile.username))
+                .description(desc)
+                .image("attachment://profile.png")
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+
+            let attachment = CreateAttachment::bytes(png_bytes, "profile.png");
+            let _ = msg
+                .channel_id
+                .send_message(
+                    &ctx.http,
+                    CreateMessage::new().embed(embed).add_file(attachment),
+                )
+                .await;
+        }
+        Err(e) => {
+            // Text fallback mirroring the card's content.
+            let mut desc = format!(
+                "```\n  {} total  ·  {} this week  ·  {} active weeks\n```\n",
+                format_duration(profile.total_minutes),
+                format_duration(profile.current_week_minutes),
+                profile.active_weeks,
+            );
+            if let Some((label, minutes)) = &profile.best_week {
+                desc += &format!("best week · {} ({})\n", label, format_duration(*minutes));
+            }
+            if let Some((activity, elapsed)) = &profile.active_session {
+                desc += &format!("now · {} ({})\n", activity, format_duration(*elapsed));
+            }
+            desc += "\n";
+            let max_minutes = profile
+                .top_activities
+                .first()
+                .map(|(_, m)| *m)
+                .unwrap_or(1);
+            for (activity, minutes) in profile.top_activities.iter().take(8) {
+                desc += &format!(
+                    "`{}` {} — {}\n",
+                    make_bar(*minutes, max_minutes),
+                    activity,
+                    format_duration(*minutes)
+                );
+            }
+
+            let mut full_desc = format!("Fallback view · {}\n\n{}", e, desc);
+            const MAX_EMBED_DESC_CHARS: usize = 4000;
+            if full_desc.chars().count() > MAX_EMBED_DESC_CHARS {
+                let keep = MAX_EMBED_DESC_CHARS.saturating_sub(16);
+                let truncated: String = full_desc.chars().take(keep).collect();
+                full_desc = format!("{truncated}\n… (truncated)");
+            }
+            let embed = CreateEmbed::new()
+                .color(COLOR_VIOLET)
+                .title(format!("profile · {}", profile.username))
+                .description(full_desc)
+                .footer(CreateEmbedFooter::new(swiss_timestamp()));
+            let _ = msg
+                .channel_id
+                .send_message(&ctx.http, CreateMessage::new().embed(embed))
+                .await;
+        }
+    }
 }
 
 async fn handle_rename(ctx: &Context, msg: &Message, db: &Arc<Db>, args: &str) {

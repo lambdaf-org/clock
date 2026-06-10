@@ -1,4 +1,4 @@
-use crate::db::{ChartData, LeaderboardEntry};
+use crate::db::{ChartData, LeaderboardEntry, UserProfile};
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 
@@ -31,8 +31,13 @@ const ALLTIME_ACCENT: RGBColor = RGBColor(0xa7, 0x8b, 0xfa);
 const RANK_GOLD: RGBColor = RGBColor(0xf5, 0xc5, 0x42);
 const RANK_SILVER: RGBColor = RGBColor(0xb2, 0xc8, 0xff);
 const RANK_BRONZE: RGBColor = RGBColor(0xe0, 0x8a, 0x3e);
+const LIVE_GREEN: RGBColor = RGBColor(0x2e, 0xcc, 0x71);
 const MAX_LEADERBOARD_NAME_CHARS: usize = 18;
 const MAX_CHART_LEGEND_CHARS: usize = 14;
+const MAX_PROFILE_ACTIVITIES: usize = 6;
+const MAX_PROFILE_ACTIVITY_CHARS: usize = 18;
+const MAX_PROFILE_TITLE_CHARS: usize = 14;
+const MAX_PROFILE_STATUS_CHARS: usize = 12;
 const LEADERBOARD_CONTENT_BOTTOM_Y: i32 = 790;
 const LEADERBOARD_MIN_ALLTIME_HEIGHT: i32 = 220;
 
@@ -389,6 +394,445 @@ where
     Ok(())
 }
 
+/// Render a per-user activity profile card.
+/// Layout: header with live status, four stat tiles, an all-time activity
+/// breakdown, and a weekly trend strip. Image height adapts to the number
+/// of activity rows.
+pub fn render_user_card(profile: &UserProfile) -> anyhow::Result<Vec<u8>> {
+    let width: u32 = 1120;
+    let left: i32 = 56;
+    let section_w: i32 = 1008;
+
+    let tiles_top: i32 = 160;
+    let tiles_h: i32 = 96;
+
+    let shown = profile.top_activities.len().min(MAX_PROFILE_ACTIVITIES);
+    let overflow_count = profile.top_activities.len().saturating_sub(shown);
+    let act_top = tiles_top + tiles_h + 22;
+    let act_rows = shown.max(1) as i32; // one row minimum for the empty message
+    let act_h = 70 + act_rows * 54 + if overflow_count > 0 { 40 } else { 0 } + 14;
+
+    let trend_top = act_top + act_h + 22;
+    let trend_h: i32 = 208;
+
+    let card_bottom = trend_top + trend_h + 26;
+    let footer_y = card_bottom + 34;
+    let height = (footer_y + 26) as u32;
+
+    let mut pixel_buf = vec![0u8; (width * height * 3) as usize];
+    {
+        let root = BitMapBackend::with_buffer(&mut pixel_buf, (width, height)).into_drawing_area();
+        root.fill(&BG)
+            .map_err(|e| anyhow::anyhow!("fill error: {:?}", e))?;
+
+        root.draw(&Rectangle::new(
+            [(24, 20), (1096, card_bottom)],
+            ShapeStyle::from(&PANEL_BG).filled(),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw card bg: {:?}", e))?;
+        root.draw(&Rectangle::new(
+            [(24, 20), (1096, card_bottom)],
+            ShapeStyle::from(&PANEL_STROKE).stroke_width(1),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw card border: {:?}", e))?;
+
+        // ── Header ────────────────────────────────────────────
+        root.draw(&Text::new(
+            truncate_name(&profile.username, MAX_PROFILE_TITLE_CHARS),
+            (left, 56),
+            ("sans-serif", 42).into_font().color(&FG),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw title: {:?}", e))?;
+
+        root.draw(&Text::new(
+            "activity profile · all time",
+            (left, 104),
+            ("sans-serif", 20).into_font().color(&MUTED),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw subtitle: {:?}", e))?;
+
+        let (status_text, status_color) = match &profile.active_session {
+            Some((activity, elapsed)) => (
+                format!(
+                    "● {} · {}",
+                    truncate_name(activity, MAX_PROFILE_STATUS_CHARS),
+                    format_duration(*elapsed)
+                ),
+                LIVE_GREEN,
+            ),
+            None => ("○ not clocked in".to_string(), MUTED),
+        };
+        root.draw(&Text::new(
+            status_text,
+            (left + section_w, 70),
+            ("sans-serif", 22)
+                .into_font()
+                .color(&status_color)
+                .pos(Pos::new(HPos::Right, VPos::Center)),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw status: {:?}", e))?;
+
+        root.draw(&PathElement::new(
+            vec![(left, 134), (left + section_w, 134)],
+            PANEL_STROKE.mix(0.85).stroke_width(1),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw header divider: {:?}", e))?;
+
+        // ── Stat tiles ────────────────────────────────────────
+        let best_label = match &profile.best_week {
+            Some((label, _)) => format!("best week · {}", short_week_label(label)),
+            None => "best week".to_string(),
+        };
+        let best_value = match &profile.best_week {
+            Some((_, minutes)) => format_duration(*minutes),
+            None => "—".to_string(),
+        };
+        let tiles: [(String, String); 4] = [
+            ("total".to_string(), format_duration(profile.total_minutes)),
+            (
+                "this week".to_string(),
+                format_duration(profile.current_week_minutes),
+            ),
+            (best_label, best_value),
+            (
+                "active weeks".to_string(),
+                format!("{}", profile.active_weeks),
+            ),
+        ];
+        const TILE_W: i32 = 240;
+        const TILE_GAP: i32 = 16; // 4 * 240 + 3 * 16 == section_w
+        for (i, (label, value)) in tiles.iter().enumerate() {
+            let tx = left + i as i32 * (TILE_W + TILE_GAP);
+            root.draw(&Rectangle::new(
+                [(tx, tiles_top), (tx + TILE_W, tiles_top + tiles_h)],
+                ShapeStyle::from(&PANEL_BG.mix(0.8)).filled(),
+            ))
+            .map_err(|e| anyhow::anyhow!("draw tile bg: {:?}", e))?;
+            root.draw(&Rectangle::new(
+                [(tx, tiles_top), (tx + TILE_W, tiles_top + tiles_h)],
+                ShapeStyle::from(&PANEL_STROKE).stroke_width(1),
+            ))
+            .map_err(|e| anyhow::anyhow!("draw tile border: {:?}", e))?;
+            root.draw(&Text::new(
+                label.clone(),
+                (tx + 18, tiles_top + 18),
+                ("sans-serif", 17).into_font().color(&MUTED),
+            ))
+            .map_err(|e| anyhow::anyhow!("draw tile label: {:?}", e))?;
+            root.draw(&Text::new(
+                value.clone(),
+                (tx + 18, tiles_top + 46),
+                ("sans-serif", 30).into_font().color(&FG),
+            ))
+            .map_err(|e| anyhow::anyhow!("draw tile value: {:?}", e))?;
+        }
+
+        draw_profile_activities(
+            &root,
+            left,
+            act_top,
+            section_w,
+            act_h,
+            profile,
+            shown,
+            overflow_count,
+        )?;
+        draw_profile_trend(&root, left, trend_top, section_w, trend_h, profile)?;
+
+        root.draw(&Text::new(
+            "Tracked with /clock · Europe/Zurich",
+            (left, footer_y),
+            ("sans-serif", 18).into_font().color(&MUTED),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw footer: {:?}", e))?;
+
+        root.present()
+            .map_err(|e| anyhow::anyhow!("present error: {:?}", e))?;
+    }
+
+    let img = image::RgbImage::from_raw(width, height, pixel_buf)
+        .ok_or_else(|| anyhow::anyhow!("failed to create RGB image from pixel buffer"))?;
+    let mut png_bytes: Vec<u8> = Vec::new();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(
+            &mut std::io::Cursor::new(&mut png_bytes),
+            image::ImageFormat::Png,
+        )
+        .map_err(|e| anyhow::anyhow!("PNG encode error: {}", e))?;
+
+    Ok(png_bytes)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_profile_activities<DB>(
+    area: &DrawingArea<DB, plotters::coord::Shift>,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    profile: &UserProfile,
+    shown: usize,
+    overflow_count: usize,
+) -> anyhow::Result<()>
+where
+    DB: DrawingBackend,
+    DB::ErrorType: std::error::Error + Send + Sync + 'static,
+{
+    area.draw(&Rectangle::new(
+        [(x, y), (x + w, y + h)],
+        ShapeStyle::from(&PANEL_BG.mix(0.8)).filled(),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw activities bg: {:?}", e))?;
+    area.draw(&Rectangle::new(
+        [(x, y), (x + w, y + h)],
+        ShapeStyle::from(&ALLTIME_ACCENT.mix(0.42)).stroke_width(1),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw activities border: {:?}", e))?;
+
+    area.draw(&Text::new(
+        "what they do",
+        (x + 24, y + 26),
+        ("sans-serif", 26).into_font().color(&FG),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw activities title: {:?}", e))?;
+
+    area.draw(&Text::new(
+        format!("{} activities", profile.top_activities.len()),
+        (x + w - 24, y + 40),
+        ("sans-serif", 19)
+            .into_font()
+            .color(&MUTED)
+            .pos(Pos::new(HPos::Right, VPos::Center)),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw activities count: {:?}", e))?;
+
+    area.draw(&PathElement::new(
+        vec![(x + 24, y + 58), (x + w - 24, y + 58)],
+        PANEL_STROKE.mix(0.75).stroke_width(1),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw activities divider: {:?}", e))?;
+
+    if shown == 0 {
+        area.draw(&Text::new(
+            "No completed sessions yet.",
+            (x + 24, y + 84),
+            ("sans-serif", 24).into_font().color(&MUTED),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw activities empty: {:?}", e))?;
+        return Ok(());
+    }
+
+    const ROW_HEIGHT: i32 = 54;
+    const BAR_LEFT_OFFSET: i32 = 460;
+    const BAR_MAX_WIDTH: i64 = 300;
+    const BAR_HEIGHT: i32 = 14;
+    let max_minutes = profile
+        .top_activities
+        .first()
+        .map(|(_, m)| *m)
+        .unwrap_or(1)
+        .max(1);
+    let total = profile.total_minutes.max(1);
+
+    for (idx, (activity, minutes)) in profile.top_activities.iter().take(shown).enumerate() {
+        let row_y = y + 70 + idx as i32 * ROW_HEIGHT;
+
+        if idx > 0 {
+            area.draw(&PathElement::new(
+                vec![(x + 24, row_y - 6), (x + w - 24, row_y - 6)],
+                PANEL_STROKE.mix(0.45).stroke_width(1),
+            ))
+            .map_err(|e| anyhow::anyhow!("draw activity row divider: {:?}", e))?;
+        }
+
+        area.draw(&Text::new(
+            truncate_name(activity, MAX_PROFILE_ACTIVITY_CHARS),
+            (x + 24, row_y + 12),
+            ("sans-serif", 25).into_font().color(&FG),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw activity name: {:?}", e))?;
+
+        let bar_left = x + BAR_LEFT_OFFSET;
+        let bar_top = row_y + 19;
+        let fill = ((minutes * BAR_MAX_WIDTH) / max_minutes).max(2) as i32;
+        area.draw(&Rectangle::new(
+            [
+                (bar_left, bar_top),
+                (bar_left + BAR_MAX_WIDTH as i32, bar_top + BAR_HEIGHT),
+            ],
+            ShapeStyle::from(&PANEL_STROKE.mix(0.9)).filled(),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw activity bar bg: {:?}", e))?;
+        area.draw(&Rectangle::new(
+            [(bar_left, bar_top), (bar_left + fill, bar_top + BAR_HEIGHT)],
+            ShapeStyle::from(&ALLTIME_ACCENT.mix(0.8)).filled(),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw activity bar fill: {:?}", e))?;
+
+        let pct = (minutes * 100 + total / 2) / total;
+        area.draw(&Text::new(
+            format!("{} · {}%", format_duration(*minutes), pct),
+            (x + w - 24, row_y + 26),
+            ("sans-serif", 24)
+                .into_font()
+                .color(&FG)
+                .pos(Pos::new(HPos::Right, VPos::Center)),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw activity value: {:?}", e))?;
+    }
+
+    if overflow_count > 0 {
+        let rest_minutes: i64 = profile
+            .top_activities
+            .iter()
+            .skip(shown)
+            .map(|(_, m)| *m)
+            .sum();
+        let row_y = y + 70 + shown as i32 * ROW_HEIGHT;
+        area.draw(&Text::new(
+            format!(
+                "+ {} more · {}",
+                overflow_count,
+                format_duration(rest_minutes)
+            ),
+            (x + 24, row_y + 8),
+            ("sans-serif", 20).into_font().color(&MUTED),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw activity overflow: {:?}", e))?;
+    }
+
+    Ok(())
+}
+
+fn draw_profile_trend<DB>(
+    area: &DrawingArea<DB, plotters::coord::Shift>,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    profile: &UserProfile,
+) -> anyhow::Result<()>
+where
+    DB: DrawingBackend,
+    DB::ErrorType: std::error::Error + Send + Sync + 'static,
+{
+    area.draw(&Rectangle::new(
+        [(x, y), (x + w, y + h)],
+        ShapeStyle::from(&PANEL_BG.mix(0.8)).filled(),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw trend bg: {:?}", e))?;
+    area.draw(&Rectangle::new(
+        [(x, y), (x + w, y + h)],
+        ShapeStyle::from(&WEEK_ACCENT.mix(0.42)).stroke_width(1),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw trend border: {:?}", e))?;
+
+    let n = profile.week_labels.len().max(1);
+    area.draw(&Text::new(
+        format!("last {} weeks", n),
+        (x + 24, y + 26),
+        ("sans-serif", 26).into_font().color(&FG),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw trend title: {:?}", e))?;
+
+    let max_minutes = profile.weekly_minutes.iter().copied().max().unwrap_or(0);
+    let right_text = if max_minutes > 0 {
+        format!("peak · {}", format_duration(max_minutes))
+    } else {
+        "no data in window".to_string()
+    };
+    area.draw(&Text::new(
+        right_text,
+        (x + w - 24, y + 40),
+        ("sans-serif", 19)
+            .into_font()
+            .color(&MUTED)
+            .pos(Pos::new(HPos::Right, VPos::Center)),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw trend peak: {:?}", e))?;
+
+    area.draw(&PathElement::new(
+        vec![(x + 24, y + 58), (x + w - 24, y + 58)],
+        PANEL_STROKE.mix(0.75).stroke_width(1),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw trend divider: {:?}", e))?;
+
+    let inner_left = x + 24;
+    let inner_w = w - 48;
+    let bars_bottom = y + 162;
+    // Short enough that the peak label above the tallest bar clears the
+    // section divider at y + 58.
+    let bars_max_h: i32 = 72;
+    let slot = inner_w / n as i32;
+    let bar_w = (slot * 3 / 5).max(2);
+    let scale_max = max_minutes.max(1);
+
+    let mut peak_center: Option<(i32, i32)> = None;
+    for (i, minutes) in profile.weekly_minutes.iter().enumerate() {
+        let bx = inner_left + i as i32 * slot + (slot - bar_w) / 2;
+        let is_current = i == n - 1;
+        if *minutes > 0 {
+            let bar_h = ((*minutes * bars_max_h as i64) / scale_max).max(3) as i32;
+            let color = if is_current {
+                WEEK_ACCENT.mix(1.0)
+            } else {
+                WEEK_ACCENT.mix(0.55)
+            };
+            area.draw(&Rectangle::new(
+                [(bx, bars_bottom - bar_h), (bx + bar_w, bars_bottom)],
+                ShapeStyle::from(&color).filled(),
+            ))
+            .map_err(|e| anyhow::anyhow!("draw trend bar: {:?}", e))?;
+            if *minutes == max_minutes && peak_center.is_none() {
+                peak_center = Some((bx + bar_w / 2, bars_bottom - bar_h));
+            }
+        } else {
+            area.draw(&Rectangle::new(
+                [(bx, bars_bottom - 2), (bx + bar_w, bars_bottom)],
+                ShapeStyle::from(&MUTED.mix(0.3)).filled(),
+            ))
+            .map_err(|e| anyhow::anyhow!("draw trend stub: {:?}", e))?;
+        }
+    }
+
+    area.draw(&PathElement::new(
+        vec![(inner_left, bars_bottom + 1), (x + w - 24, bars_bottom + 1)],
+        PANEL_STROKE.mix(0.9).stroke_width(1),
+    ))
+    .map_err(|e| anyhow::anyhow!("draw trend baseline: {:?}", e))?;
+
+    if let Some((cx, top)) = peak_center {
+        area.draw(&Text::new(
+            format_duration(max_minutes),
+            (cx, top - 16),
+            ("sans-serif", 16)
+                .into_font()
+                .color(&MUTED)
+                .pos(Pos::new(HPos::Center, VPos::Center)),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw trend peak label: {:?}", e))?;
+    }
+
+    let step = n.div_ceil(6).max(1);
+    for (i, label) in profile.week_labels.iter().enumerate() {
+        if i % step != 0 && i != n - 1 {
+            continue;
+        }
+        let cx = inner_left + i as i32 * slot + slot / 2;
+        area.draw(&Text::new(
+            short_week_label(label),
+            (cx, bars_bottom + 16),
+            ("sans-serif", 16)
+                .into_font()
+                .color(&MUTED)
+                .pos(Pos::new(HPos::Center, VPos::Center)),
+        ))
+        .map_err(|e| anyhow::anyhow!("draw trend label: {:?}", e))?;
+    }
+
+    Ok(())
+}
+
 fn rank_label(idx: usize) -> String {
     match idx {
         0 => "1st".to_string(),
@@ -698,6 +1142,56 @@ mod tests {
             users: vec![],
         };
         assert!(render_chart(&data, ChartMode::Totals).is_err());
+    }
+
+    fn sample_profile() -> crate::db::UserProfile {
+        crate::db::UserProfile {
+            username: "Alice".to_string(),
+            total_minutes: 1234,
+            current_week_minutes: 230,
+            active_weeks: 7,
+            best_week: Some(("KW15/2026".to_string(), 480)),
+            top_activities: vec![
+                ("writing".to_string(), 400),
+                ("reading".to_string(), 300),
+                ("thesis".to_string(), 200),
+                ("review".to_string(), 120),
+                ("meeting".to_string(), 90),
+                ("planning".to_string(), 60),
+                ("email".to_string(), 40),
+                ("misc".to_string(), 24),
+            ],
+            week_labels: (14..=25).map(|w| format!("KW{:02}/2026", w)).collect(),
+            weekly_minutes: vec![0, 60, 480, 120, 0, 90, 200, 44, 0, 0, 10, 230],
+            active_session: Some(("writing".to_string(), 42)),
+        }
+    }
+
+    #[test]
+    fn test_render_user_card_produces_png() {
+        register_test_font();
+        let profile = sample_profile();
+        let bytes = render_user_card(&profile).expect("render failed");
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(bytes.len() > 10_000, "user card PNG seems too small");
+    }
+
+    #[test]
+    fn test_render_user_card_empty_profile() {
+        register_test_font();
+        let profile = crate::db::UserProfile {
+            username: "Alice".to_string(),
+            total_minutes: 0,
+            current_week_minutes: 0,
+            active_weeks: 0,
+            best_week: None,
+            top_activities: vec![],
+            week_labels: (14..=25).map(|w| format!("KW{:02}/2026", w)).collect(),
+            weekly_minutes: vec![0; 12],
+            active_session: None,
+        };
+        let bytes = render_user_card(&profile).expect("render failed");
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
     }
 
     #[test]
