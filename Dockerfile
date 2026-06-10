@@ -10,9 +10,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates python3 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/clockbot /usr/local/bin/clockbot
-COPY scripts/fold_discord_username.py /usr/local/bin/fold_discord_username.py
+COPY scripts/merge_clock_user.py /usr/local/bin/merge_clock_user.py
 COPY scripts/dump_db_stats.py /usr/local/bin/dump_db_stats.py
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/fold_discord_username.py /usr/local/bin/dump_db_stats.py /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/merge_clock_user.py /usr/local/bin/dump_db_stats.py /usr/local/bin/docker-entrypoint.sh
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["clockbot"]
