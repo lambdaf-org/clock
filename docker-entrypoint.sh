@@ -18,4 +18,13 @@ if [ -n "${CLOCK_FOLD_USERNAME_TARGET:-}" ]; then
   fi
 fi
 
+# Dump the current DB to the logs on every startup, so the stats are
+# recoverable from the logs if the /data volume is ever lost or corrupted.
+# Best-effort: a failed dump must never stop the bot from starting.
+if [ -f "$DB_PATH" ]; then
+  python3 /usr/local/bin/dump_db_stats.py "$DB_PATH" || echo "[clock] db stats dump failed, continuing"
+else
+  echo "[clock] no database at $DB_PATH yet, skipping stats dump"
+fi
+
 exec "$@"
