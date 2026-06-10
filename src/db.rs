@@ -1,6 +1,6 @@
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Utc};
 use chrono_tz::Europe::Zurich;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -55,6 +55,26 @@ pub struct UserActivityEntry {
 pub struct UserWeeklyData {
     pub username: String,
     pub minutes_per_week: Vec<i64>,
+}
+
+#[derive(Debug)]
+pub struct UserProfile {
+    pub username: String,
+    /// All-time tracked minutes (live sessions + weekly archive).
+    pub total_minutes: i64,
+    pub current_week_minutes: i64,
+    /// Number of distinct weeks with tracked time (including the current one).
+    pub active_weeks: i64,
+    /// Highest-volume week: (week_label, minutes).
+    pub best_week: Option<(String, i64)>,
+    /// All-time per-activity totals, descending.
+    pub top_activities: Vec<(String, i64)>,
+    /// Trend window labels in chronological order (oldest first).
+    pub week_labels: Vec<String>,
+    /// Minutes per week aligned with `week_labels`.
+    pub weekly_minutes: Vec<i64>,
+    /// Currently running session: (activity, elapsed minutes).
+    pub active_session: Option<(String, i64)>,
 }
 
 #[derive(Debug)]
@@ -739,6 +759,204 @@ impl Db {
         Ok(ChartData { week_labels, users })
     }
 
+    /// Resolve a user by user_id or by username (case-insensitive exact match,
+    /// then prefix match) across live sessions and archives.
+    /// When one name maps to several accounts (pre-merge duplicates), the
+    /// account with the most tracked time wins.
+    /// Returns the matching (user_id, most recent username for that account).
+    pub fn resolve_user(&self, query: &str) -> anyhow::Result<Option<(String, String)>> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Ok(None);
+        }
+        let conn = self.conn.lock().unwrap();
+
+        // Most recent record wins; live sessions take priority over archives.
+        const UNION: &str = "SELECT user_id, username, src, ord FROM (
+                SELECT user_id, username, 2 AS src, id AS ord FROM sessions
+                UNION ALL
+                SELECT user_id, username, 1 AS src, id AS ord FROM weekly_archive
+                UNION ALL
+                SELECT user_id, username, 0 AS src, id AS ord FROM activity_archive
+            )";
+
+        // Distinct matching accounts, each with its most recent username,
+        // in recency order.
+        let candidates_for = |sql: &str, param: &str| -> anyhow::Result<Vec<(String, String)>> {
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map(params![param], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            let mut out: Vec<(String, String)> = Vec::new();
+            for (user_id, username) in rows.filter_map(|r| r.ok()) {
+                if !out.iter().any(|(uid, _)| *uid == user_id) {
+                    out.push((user_id, username));
+                }
+            }
+            Ok(out)
+        };
+
+        let exact = format!(
+            "{UNION} WHERE user_id = ?1 OR LOWER(username) = LOWER(?1)
+             ORDER BY src DESC, ord DESC"
+        );
+        let mut candidates = candidates_for(&exact, q)?;
+
+        if candidates.is_empty() {
+            let escaped = q
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            let prefix = format!(
+                "{UNION} WHERE LOWER(username) LIKE LOWER(?1) || '%' ESCAPE '\\'
+                 ORDER BY src DESC, ord DESC"
+            );
+            candidates = candidates_for(&prefix, &escaped)?;
+        }
+
+        if candidates.len() <= 1 {
+            return Ok(candidates.pop());
+        }
+
+        // Ambiguous name: prefer the account with the most tracked time
+        // (ties go to the most recently active candidate).
+        let mut best = (i64::MIN, 0usize);
+        for (i, (user_id, _)) in candidates.iter().enumerate() {
+            let total: i64 = conn.query_row(
+                "SELECT COALESCE((SELECT SUM(minutes) FROM sessions
+                                  WHERE user_id = ?1 AND ended_at IS NOT NULL), 0)
+                      + COALESCE((SELECT SUM(total_min) FROM weekly_archive
+                                  WHERE user_id = ?1), 0)",
+                params![user_id],
+                |r| r.get(0),
+            )?;
+            if total > best.0 {
+                best = (total, i);
+            }
+        }
+        Ok(Some(candidates.swap_remove(best.1)))
+    }
+
+    /// Build the all-time activity profile for one user, with a trailing
+    /// `weeks`-week trend window. Returns None if the user has no records.
+    pub fn user_profile(&self, user_id: &str, weeks: u32) -> anyhow::Result<Option<UserProfile>> {
+        let week_labels = generate_week_labels(weeks.max(1));
+        let current_week_label = swiss_week_label();
+        let monday = monday_of_current_week();
+        let now = now_ch();
+        let conn = self.conn.lock().unwrap();
+
+        // Most recent stored username; doubles as the existence check.
+        let username: Option<String> = conn
+            .query_row(
+                "SELECT username FROM (
+                    SELECT username, 2 AS src, id AS ord FROM sessions WHERE user_id = ?1
+                    UNION ALL
+                    SELECT username, 1 AS src, id AS ord FROM weekly_archive WHERE user_id = ?1
+                    UNION ALL
+                    SELECT username, 0 AS src, id AS ord FROM activity_archive WHERE user_id = ?1
+                 ) ORDER BY src DESC, ord DESC LIMIT 1",
+                params![user_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(username) = username else {
+            return Ok(None);
+        };
+
+        let live_total: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(minutes),0) FROM sessions
+             WHERE user_id = ?1 AND ended_at IS NOT NULL",
+            params![user_id],
+            |r| r.get(0),
+        )?;
+        let archive_total: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(total_min),0) FROM weekly_archive WHERE user_id = ?1",
+            params![user_id],
+            |r| r.get(0),
+        )?;
+
+        let current_week_minutes: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(minutes),0) FROM sessions
+             WHERE user_id = ?1 AND ended_at IS NOT NULL AND ended_at >= ?2",
+            params![user_id, monday],
+            |r| r.get(0),
+        )?;
+
+        // Per-week totals over the full history (best week, active weeks, trend).
+        // Like weekly_hours_for_chart, the current week comes exclusively from
+        // live sessions: a mistimed archive run can leave archive rows labeled
+        // with the current week, which must not be double-counted here.
+        // Zero-minute archive rows (sub-minute sessions) don't count as activity.
+        let mut weekly_map: HashMap<String, i64> = HashMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT week_label, SUM(total_min) FROM weekly_archive
+                 WHERE user_id = ?1 AND week_label <> ?2
+                 GROUP BY week_label HAVING SUM(total_min) > 0",
+            )?;
+            let rows = stmt.query_map(params![user_id, current_week_label], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            for (label, minutes) in rows.filter_map(|r| r.ok()) {
+                *weekly_map.entry(label).or_insert(0) += minutes;
+            }
+        }
+        if current_week_minutes > 0 {
+            *weekly_map.entry(current_week_label).or_insert(0) += current_week_minutes;
+        }
+
+        let active_weeks = weekly_map.len() as i64;
+        let best_week = weekly_map
+            .iter()
+            .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
+            .map(|(label, minutes)| (label.clone(), *minutes));
+        let weekly_minutes: Vec<i64> = week_labels
+            .iter()
+            .map(|wl| *weekly_map.get(wl).unwrap_or(&0))
+            .collect();
+
+        let mut stmt = conn.prepare(
+            "SELECT activity, SUM(mins) AS total FROM (
+                SELECT activity, SUM(minutes) AS mins FROM sessions
+                    WHERE user_id = ?1 AND ended_at IS NOT NULL GROUP BY activity
+                UNION ALL
+                SELECT activity, SUM(total_min) AS mins FROM activity_archive
+                    WHERE user_id = ?1 GROUP BY activity
+             ) GROUP BY activity ORDER BY total DESC, activity ASC",
+        )?;
+        let top_activities: Vec<(String, i64)> = stmt
+            .query_map(params![user_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let active_session = match conn.query_row(
+            "SELECT activity, started_at FROM sessions
+             WHERE user_id = ?1 AND ended_at IS NULL",
+            params![user_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        ) {
+            Ok((activity, started_str)) => {
+                let started = NaiveDateTime::parse_from_str(&started_str, "%Y-%m-%d %H:%M:%S")?;
+                Some((activity, (now - started).num_minutes()))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
+
+        Ok(Some(UserProfile {
+            username,
+            total_minutes: live_total + archive_total,
+            current_week_minutes,
+            active_weeks,
+            best_week,
+            top_activities,
+            week_labels,
+            weekly_minutes,
+            active_session,
+        }))
+    }
+
     // ── Role-assignment query methods ────────────────────────────
 
     /// Per-user activity breakdown from the live sessions table (current week).
@@ -1145,6 +1363,211 @@ mod tests {
                 .iter()
                 .any(|e| e.user_id == "u2" && e.activity == "meeting" && e.total_minutes == 60)
         );
+    }
+
+    #[test]
+    fn test_resolve_user() {
+        let (db, _temp_dir) = setup_test_db();
+
+        db.clock_in("u1", "Alice", "writing").unwrap();
+        db.clock_out("u1").unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["u2", "Bob_the2nd", "KW01/2026", 60i64],
+            )
+            .unwrap();
+        }
+
+        // By user id, by exact case-insensitive name, by prefix.
+        assert_eq!(
+            db.resolve_user("u1").unwrap(),
+            Some(("u1".to_string(), "Alice".to_string()))
+        );
+        assert_eq!(
+            db.resolve_user("alice").unwrap(),
+            Some(("u1".to_string(), "Alice".to_string()))
+        );
+        assert_eq!(
+            db.resolve_user("ali").unwrap(),
+            Some(("u1".to_string(), "Alice".to_string()))
+        );
+        assert_eq!(
+            db.resolve_user("bob_the2nd").unwrap(),
+            Some(("u2".to_string(), "Bob_the2nd".to_string()))
+        );
+        assert_eq!(db.resolve_user("nobody").unwrap(), None);
+        assert_eq!(db.resolve_user("").unwrap(), None);
+        // LIKE wildcards in the query must not match everything.
+        assert_eq!(db.resolve_user("%").unwrap(), None);
+
+        // The most recent username wins.
+        db.clock_in("u1", "AliceRenamed", "writing").unwrap();
+        assert_eq!(
+            db.resolve_user("u1").unwrap(),
+            Some(("u1".to_string(), "AliceRenamed".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_resolve_user_ambiguous_name_prefers_most_minutes() {
+        let (db, _temp_dir) = setup_test_db();
+        {
+            let conn = db.conn.lock().unwrap();
+            // Two pre-merge accounts share the display name "Thirsty".
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["small", "Thirsty", "KW01/2026", 30i64],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["big", "Thirsty", "KW01/2026", 500i64],
+            )
+            .unwrap();
+        }
+        // "small" is more recent (higher rowid), but "big" has more time.
+        assert_eq!(
+            db.resolve_user("thirsty").unwrap(),
+            Some(("big".to_string(), "Thirsty".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_user_profile_no_data() {
+        let (db, _temp_dir) = setup_test_db();
+        assert!(db.user_profile("ghost", 12).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_user_profile_ignores_current_week_archive_and_zero_weeks() {
+        let (db, _temp_dir) = setup_test_db();
+        let current_label = swiss_week_label();
+        let week_labels = generate_week_labels(4);
+        let week_a = &week_labels[0];
+        let week_b = &week_labels[1];
+
+        {
+            let conn = db.conn.lock().unwrap();
+            // Mistimed archive run left last week's total under the current label.
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["u1", "Alice", current_label, 300i64],
+            )
+            .unwrap();
+            // A real past week, and a zero-minute week that must not count.
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["u1", "Alice", week_a, 120i64],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["u1", "Alice", week_b, 0i64],
+            )
+            .unwrap();
+        }
+
+        let profile = db.user_profile("u1", 4).unwrap().unwrap();
+        // The mislabeled row still counts toward the all-time total...
+        assert_eq!(profile.total_minutes, 420);
+        // ...but the current-week trend bucket comes only from live sessions,
+        // and the zero-minute week is not an active week.
+        assert_eq!(profile.current_week_minutes, 0);
+        assert_eq!(profile.weekly_minutes, vec![120, 0, 0, 0]);
+        assert_eq!(profile.active_weeks, 1);
+        assert_eq!(profile.best_week, Some((week_a.clone(), 120)));
+    }
+
+    #[test]
+    fn test_user_profile_aggregates() {
+        let (db, _temp_dir) = setup_test_db();
+
+        let week_labels = generate_week_labels(4);
+        let week_a = &week_labels[0];
+        let week_b = &week_labels[1];
+
+        let monday = monday_of_current_week();
+        let monday_dt = NaiveDateTime::parse_from_str(&monday, "%Y-%m-%d %H:%M:%S").unwrap();
+        let started = (monday_dt + Duration::hours(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let ended = (monday_dt + Duration::hours(2) + Duration::minutes(30))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["u1", "Alice", week_a, 120i64],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["u1", "Alice", week_b, 60i64],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO activity_archive (user_id, username, week_label, activity, total_min) VALUES (?1,?2,?3,?4,?5)",
+                params!["u1", "Alice", week_a, "writing", 120i64],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO activity_archive (user_id, username, week_label, activity, total_min) VALUES (?1,?2,?3,?4,?5)",
+                params!["u1", "Alice", week_b, "reading", 60i64],
+            )
+            .unwrap();
+            // Current-week live session: 90 minutes of writing.
+            conn.execute(
+                "INSERT INTO sessions (user_id, username, activity, started_at, ended_at, minutes)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                params!["u1", "Alice", "writing", started, ended, 90i64],
+            )
+            .unwrap();
+            // Other users must not leak into the profile.
+            conn.execute(
+                "INSERT INTO weekly_archive (user_id, username, week_label, total_min) VALUES (?1,?2,?3,?4)",
+                params!["u2", "Bob", week_a, 999i64],
+            )
+            .unwrap();
+        }
+
+        let profile = db.user_profile("u1", 4).unwrap().unwrap();
+        assert_eq!(profile.username, "Alice");
+        assert_eq!(profile.total_minutes, 270);
+        assert_eq!(profile.current_week_minutes, 90);
+        // week_a, week_b, and the current week.
+        assert_eq!(profile.active_weeks, 3);
+        assert_eq!(profile.best_week, Some((week_a.clone(), 120)));
+        assert_eq!(
+            profile.top_activities,
+            vec![("writing".to_string(), 210), ("reading".to_string(), 60)]
+        );
+        assert_eq!(profile.week_labels, week_labels);
+        assert_eq!(profile.weekly_minutes, vec![120, 60, 0, 90]);
+        assert!(profile.active_session.is_none());
+
+        // A running session shows up as the live activity.
+        db.clock_in("u1", "Alice", "deep work").unwrap();
+        let profile = db.user_profile("u1", 4).unwrap().unwrap();
+        let (activity, elapsed) = profile.active_session.unwrap();
+        assert_eq!(activity, "deep work");
+        assert!(elapsed >= 0);
+    }
+
+    #[test]
+    fn test_user_profile_active_session_only() {
+        let (db, _temp_dir) = setup_test_db();
+        db.clock_in("u1", "Alice", "thinking").unwrap();
+
+        let profile = db.user_profile("u1", 4).unwrap().unwrap();
+        assert_eq!(profile.total_minutes, 0);
+        assert_eq!(profile.active_weeks, 0);
+        assert!(profile.best_week.is_none());
+        assert!(profile.top_activities.is_empty());
+        assert_eq!(profile.active_session.unwrap().0, "thinking");
     }
 
     #[test]
