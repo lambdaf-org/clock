@@ -6,6 +6,11 @@
 
 ClockBot is a SQLite-backed Discord time tracker. Members run `/clock in <activity>` and `/clock out`; ClockBot keeps weekly and all-time leaderboards, activity breakdowns, and pure-Rust PNG line charts. Every Monday at 00:00 (Europe/Zurich) it posts a weekly report, archives the week, and assigns tiered Discord roles based on what each person actually worked on.
 
+<p align="center">
+  <img src="docs/img/leaderboard.png" alt="The /clock leaderboard card: weekly and all-time rankings" width="640"><br>
+  <sub>The <code>/clock leaderboard</code> card (sample data)</sub>
+</p>
+
 ## Quickstart
 
 ```bash
@@ -40,6 +45,7 @@ The bot opens its database at `/data/clock.db`, so make sure that path is writab
 - **`/clock` workflow**: in, out, switch, and live status, all driven by simple chat commands.
 - **Weekly resets**: every Monday 00:00 Europe/Zurich the week is summarized, archived, and cleared.
 - **Leaderboards**: weekly and all-time rankings, rendered as a PNG card with a text fallback.
+- **Profile cards**: `/clock user` (or `/clock me`) renders a per-member card with live status, stat tiles, all-time activity shares, and a 12-week trend.
 - **Activity stats**: weekly and all-time breakdowns of top activities and per-person totals.
 - **PNG line charts**: top 5 users by hours over 1 to 52 weeks, in `totals`, `cumulative`, or `both`.
 - **Pure-Rust rendering**: charts use `plotters` with the `ab_glyph` backend and an embedded DejaVu Sans font, so the runtime image needs no system font packages.
@@ -57,6 +63,8 @@ The bot opens its database at `/data/clock.db`, so make sure that path is writab
 /clock leaderboard                            weekly + all-time rankings (alias: /clock lb)
 /clock stats                                  weekly activity breakdown (top activities + per-person)
 /clock alltime                                all-time activity stats for everyone (aliases: at, all-time)
+/clock user [@user|name]                      activity profile card for a member
+/clock me                                     your own profile card
 /clock rename <old> > <new>                   rename and merge one of your activities
 /clock chart [weeks] [totals|cumulative|both] PNG line chart of top 5 weekly hours
 /clock help                                   command list
@@ -79,6 +87,20 @@ Examples:
 /clock chart 26 cumulative
 /clock chart 12 both
 ```
+
+<p align="center">
+  <img src="docs/img/chart.png" alt="PNG line chart of the top 5 users' weekly hours" width="640"><br>
+  <sub><code>/clock chart</code> (sample data)</sub>
+</p>
+
+### `/clock user` profile cards
+
+`/clock user [@user|name]` (or `/clock me` for your own) renders a profile card: live status, all-time and weekly stat tiles, what the member spends their time on, and a 12-week trend.
+
+<p align="center">
+  <img src="docs/img/user-card.png" alt="The /clock user profile card" width="640"><br>
+  <sub><code>/clock user</code> (sample data)</sub>
+</p>
 
 ## How it works
 
