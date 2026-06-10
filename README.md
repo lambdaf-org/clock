@@ -11,10 +11,22 @@ Clock in/out tracker for Discord. SQLite-backed, weekly resets, all-time leaderb
 /clock who                                    — who's working right now
 /clock leaderboard                            — weekly + all-time rankings (alias: /clock lb)
 /clock stats                                  — weekly activity breakdown (top activities + per-person)
+/clock user [@user|name]                      — PNG activity profile card (alias: /clock me)
 /clock rename <old> > <new>                   — rename and merge one of your activities
 /clock chart [weeks] [totals|cumulative|both] — PNG line chart of top 5 weekly hours
 /clock help                                   — command list
 ```
+
+### `/clock user` details
+
+Renders a per-user profile card showing what that person spends time on:
+total / this-week / best-week / active-weeks stats, an all-time activity
+breakdown with share percentages, a 12-week trend, and the live session if
+they are clocked in right now.
+
+- `/clock user` or `/clock me` — your own profile
+- `/clock user @mention` — profile of the mentioned user
+- `/clock user <name>` — lookup by tracked username (case-insensitive, prefix works)
 
 ### `/clock chart` details
 
