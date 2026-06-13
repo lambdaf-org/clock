@@ -117,6 +117,11 @@ Examples:
 
 The Monday loop runs in this order: assign roles from the live week, post the weekly report to `SUMMARY_CHANNEL`, then archive and clear the week. Role assignment groups each person's minutes per activity, embeds the activity text with a local `all-MiniLM-L6-v2` model, and scores it against seven work styles (architect, visionary, executor, analyst, ghost, strategist, maverick). Total weekly minutes set one of six tiers, which picks the role name, color, Unicode styling, and chevron nickname prefix. If the bot misses a Monday, it assigns roles from the last archived week on startup.
 
+<p align="center">
+  <img src="docs/img/earned-roles.png" alt="Earned-role gallery: seven work styles across six tiers, with color and lettering that escalate by weekly hours" width="640"><br>
+  <sub>Earned roles: every style and tier the local model can assign</sub>
+</p>
+
 ## Deployment
 
 The included `Dockerfile` builds a slim Debian runtime image:

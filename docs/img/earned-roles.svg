@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1244" height="626" viewBox="0 0 1244 626" font-family="'Helvetica Neue', 'Arial', 'Segoe UI', system-ui, sans-serif">
+<rect x="0" y="0" width="1244" height="626" rx="16" fill="#1a1b1e"/>
+<text x="46" y="48" fill="#e8eaed" font-size="22" font-weight="700">Earned roles</text>
+<text x="46" y="74" fill="#9aa0a6" font-size="13.5">A local all-MiniLM-L6-v2 model classifies each member’s weekly activity into a themed role. Colour and lettering escalate with weekly hours.</text>
+<rect x="28" y="94" width="1188" height="470" rx="12" fill="#232428"/>
+<circle cx="182" cy="124" r="6" fill="#95a5a6"/>
+<text x="196" y="129" fill="#e8eaed" font-size="14" font-weight="600">TIER 1</text>
+<text x="196" y="146" fill="#8b9096" font-size="12">0h+ / week</text>
+<circle cx="358" cy="124" r="6" fill="#3498db"/>
+<text x="372" y="129" fill="#e8eaed" font-size="14" font-weight="600">TIER 2</text>
+<text x="372" y="146" fill="#8b9096" font-size="12">20h+ / week</text>
+<circle cx="534" cy="124" r="6" fill="#2ecc71"/>
+<text x="548" y="129" fill="#e8eaed" font-size="14" font-weight="600">TIER 3</text>
+<text x="548" y="146" fill="#8b9096" font-size="12">40h+ / week</text>
+<circle cx="710" cy="124" r="6" fill="#f1c40f"/>
+<text x="724" y="129" fill="#e8eaed" font-size="14" font-weight="600">TIER 4</text>
+<text x="724" y="146" fill="#8b9096" font-size="12">60h+ / week</text>
+<circle cx="886" cy="124" r="6" fill="#e67e22"/>
+<text x="900" y="129" fill="#e8eaed" font-size="14" font-weight="600">TIER 5</text>
+<text x="900" y="146" fill="#8b9096" font-size="12">75h+ / week</text>
+<circle cx="1062" cy="124" r="6" fill="#e74c3c"/>
+<text x="1076" y="129" fill="#e8eaed" font-size="14" font-weight="600">TIER 6</text>
+<text x="1076" y="146" fill="#8b9096" font-size="12">90h+ / week</text>
+<line x1="28" y1="158" x2="1216" y2="158" stroke="#3a3d44" stroke-width="1.5"/>
+<line x1="160" y1="94" x2="160" y2="564" stroke="#3a3d44" stroke-width="1.5"/>
+<text x="46" y="192" fill="#9aa0a6" font-size="14" font-weight="500">architect</text>
+<text x="178" y="192" fill="#95a5a6" font-size="15" font-weight="400">Sketcher</text>
+<text x="354" y="192" fill="#3498db" font-size="15" font-weight="400">〔⟫〕Builder</text>
+<text x="530" y="192" fill="#2ecc71" font-size="15" font-weight="400">〔⟫⟫〕𝑊𝑎𝑟𝑑𝑒𝑛</text>
+<text x="706" y="192" fill="#f1c40f" font-size="15" font-weight="700">〔⟫⟫⟫〕𝐑𝐚𝐦𝐩𝐚𝐫𝐭</text>
+<text x="882" y="192" fill="#e67e22" font-size="15" font-weight="700">〔⟫⟫⟫⟫〕𝗞𝗲𝘆𝘀𝘁𝗼𝗻𝗲</text>
+<text x="1058" y="192" fill="#e74c3c" font-size="15" font-weight="700">〔⟫⟫⟫⟫⟫〕𝔉𝔬𝔲𝔫𝔡𝔞𝔱𝔦𝔬𝔫</text>
+<line x1="28" y1="216" x2="1216" y2="216" stroke="#3a3d44" stroke-width="1"/>
+<text x="46" y="250" fill="#9aa0a6" font-size="14" font-weight="500">visionary</text>
+<text x="178" y="250" fill="#95a5a6" font-size="15" font-weight="400">Spark</text>
+<text x="354" y="250" fill="#3498db" font-size="15" font-weight="400">〔⟫〕Trailblazer</text>
+<text x="530" y="250" fill="#2ecc71" font-size="15" font-weight="400">〔⟫⟫〕𝐿𝑢𝑚𝑖𝑛𝑎𝑟𝑦</text>
+<text x="706" y="250" fill="#f1c40f" font-size="15" font-weight="700">〔⟫⟫⟫〕𝐂𝐚𝐭𝐚𝐥𝐲𝐬𝐭</text>
+<text x="882" y="250" fill="#e67e22" font-size="15" font-weight="700">〔⟫⟫⟫⟫〕𝗩𝗶𝘀𝗶𝗼𝗻𝗮𝗿𝘆</text>
+<text x="1058" y="250" fill="#e74c3c" font-size="15" font-weight="700">〔⟫⟫⟫⟫⟫〕𝔖𝔲𝔭𝔢𝔯𝔫𝔬𝔳𝔞</text>
+<line x1="28" y1="274" x2="1216" y2="274" stroke="#3a3d44" stroke-width="1"/>
+<text x="46" y="308" fill="#9aa0a6" font-size="14" font-weight="500">executor</text>
+<text x="178" y="308" fill="#95a5a6" font-size="15" font-weight="400">Grunt</text>
+<text x="354" y="308" fill="#3498db" font-size="15" font-weight="400">〔⟫〕Workhorse</text>
+<text x="530" y="308" fill="#2ecc71" font-size="15" font-weight="400">〔⟫⟫〕𝐽𝑢𝑔𝑔𝑒𝑟𝑛𝑎𝑢𝑡</text>
+<text x="706" y="308" fill="#f1c40f" font-size="15" font-weight="700">〔⟫⟫⟫〕𝐀𝐧𝐧𝐢𝐡𝐢𝐥𝐚𝐭𝐨𝐫</text>
+<text x="882" y="308" fill="#e67e22" font-size="15" font-weight="700">〔⟫⟫⟫⟫〕𝗧𝗶𝘁𝗮𝗻</text>
+<text x="1058" y="308" fill="#e74c3c" font-size="15" font-weight="700">〔⟫⟫⟫⟫⟫〕ℜ𝔞𝔤𝔫𝔞𝔯𝔬𝔨</text>
+<line x1="28" y1="332" x2="1216" y2="332" stroke="#3a3d44" stroke-width="1"/>
+<text x="46" y="366" fill="#9aa0a6" font-size="14" font-weight="500">analyst</text>
+<text x="178" y="366" fill="#95a5a6" font-size="15" font-weight="400">Novice</text>
+<text x="354" y="366" fill="#3498db" font-size="15" font-weight="400">〔⟫〕Auditor</text>
+<text x="530" y="366" fill="#2ecc71" font-size="15" font-weight="400">〔⟫⟫〕𝐷𝑒𝑐𝑜𝑑𝑒𝑟</text>
+<text x="706" y="366" fill="#f1c40f" font-size="15" font-weight="700">〔⟫⟫⟫〕𝐒𝐚𝐯𝐚𝐧𝐭</text>
+<text x="882" y="366" fill="#e67e22" font-size="15" font-weight="700">〔⟫⟫⟫⟫〕𝗦𝗮𝗴𝗲</text>
+<text x="1058" y="366" fill="#e74c3c" font-size="15" font-weight="700">〔⟫⟫⟫⟫⟫〕𝔄𝔟𝔰𝔬𝔩𝔲𝔱𝔢</text>
+<line x1="28" y1="390" x2="1216" y2="390" stroke="#3a3d44" stroke-width="1"/>
+<text x="46" y="424" fill="#9aa0a6" font-size="14" font-weight="500">ghost</text>
+<text x="178" y="424" fill="#95a5a6" font-size="15" font-weight="400">Drift</text>
+<text x="354" y="424" fill="#3498db" font-size="15" font-weight="400">〔⟫〕Ghost</text>
+<text x="530" y="424" fill="#2ecc71" font-size="15" font-weight="400">〔⟫⟫〕𝐻𝑎𝑢𝑛𝑡</text>
+<text x="706" y="424" fill="#f1c40f" font-size="15" font-weight="700">〔⟫⟫⟫〕𝐂𝐢𝐩𝐡𝐞𝐫</text>
+<text x="882" y="424" fill="#e67e22" font-size="15" font-weight="700">〔⟫⟫⟫⟫〕𝗔𝗯𝘆𝘀𝘀</text>
+<text x="1058" y="424" fill="#e74c3c" font-size="15" font-weight="700">〔⟫⟫⟫⟫⟫〕𝔑𝔬𝔱𝔥𝔦𝔫𝔤</text>
+<line x1="28" y1="448" x2="1216" y2="448" stroke="#3a3d44" stroke-width="1"/>
+<text x="46" y="482" fill="#9aa0a6" font-size="14" font-weight="500">strategist</text>
+<text x="178" y="482" fill="#95a5a6" font-size="15" font-weight="400">Sentinel</text>
+<text x="354" y="482" fill="#3498db" font-size="15" font-weight="400">〔⟫〕Tactician</text>
+<text x="530" y="482" fill="#2ecc71" font-size="15" font-weight="400">〔⟫⟫〕𝐺𝑒𝑛𝑒𝑟𝑎𝑙</text>
+<text x="706" y="482" fill="#f1c40f" font-size="15" font-weight="700">〔⟫⟫⟫〕𝐎𝐯𝐞𝐫𝐥𝐨𝐫𝐝</text>
+<text x="882" y="482" fill="#e67e22" font-size="15" font-weight="700">〔⟫⟫⟫⟫〕𝗚𝗿𝗮𝗻𝗱𝗺𝗮𝘀𝘁𝗲𝗿</text>
+<text x="1058" y="482" fill="#e74c3c" font-size="15" font-weight="700">〔⟫⟫⟫⟫⟫〕ℭ𝔥𝔢𝔠𝔨𝔪𝔞𝔱𝔢</text>
+<line x1="28" y1="506" x2="1216" y2="506" stroke="#3a3d44" stroke-width="1"/>
+<text x="46" y="540" fill="#9aa0a6" font-size="14" font-weight="500">maverick</text>
+<text x="178" y="540" fill="#95a5a6" font-size="15" font-weight="400">Stray</text>
+<text x="354" y="540" fill="#3498db" font-size="15" font-weight="400">〔⟫〕Rogue</text>
+<text x="530" y="540" fill="#2ecc71" font-size="15" font-weight="400">〔⟫⟫〕𝐶𝑜𝑟𝑠𝑎𝑖𝑟</text>
+<text x="706" y="540" fill="#f1c40f" font-size="15" font-weight="700">〔⟫⟫⟫〕𝐇𝐞𝐫𝐞𝐭𝐢𝐜</text>
+<text x="882" y="540" fill="#e67e22" font-size="15" font-weight="700">〔⟫⟫⟫⟫〕𝗙𝗼𝗹𝗸𝗹𝗼𝗿𝗲</text>
+<text x="1058" y="540" fill="#e74c3c" font-size="15" font-weight="700">〔⟫⟫⟫⟫⟫〕𝔄𝔫𝔬𝔪𝔞𝔩𝔶</text>
+<text x="46" y="588" fill="#8b9096" font-size="12.5">Each cell shows one of five names the bot can pick for that style and tier. Tier 1 is plain; tiers 2 to 6 add chevron brackets.</text>
+</svg>
